@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fpga -- FPGA project toolchain for F4PGA + open-source RISC-V SoCs
+anvil -- FPGA project toolchain for F4PGA + open-source RISC-V SoCs
 
 Project structure:
     config.json          project config
@@ -15,20 +15,20 @@ Project structure:
     |-- <target>/        FPGA build artifacts (eblif, fasm, bit)
 
 Commands:
-    fpga init --board <name>        Initialize new project
-    fpga init --module <name>       Create a new module
-    fpga compile                    Build firmware (C++ -> ram.v)
-    fpga synth                      Synthesize bitstream
-    fpga build                      compile + synth
-    fpga program                    Flash bitstream to board
-    fpga test tb/<tb>.v             Run testbench
-    fpga clean                      Remove build/
-    fpga status                     Show project info
-    fpga boards                     List boards
-    fpga modules                    List modules
-    fpga addmodule <name> ...       Add module(s)
-    fpga removemodule <name> ...    Remove module(s)
-    fpga installmodule              Install current dir as module
+    anvil init --board <name>        Initialize new project
+    anvil init --module <name>       Create a new module
+    anvil compile                    Build firmware (C++ -> ram.v)
+    anvil synth                      Synthesize bitstream
+    anvil build                      compile + synth
+    anvil program                    Flash bitstream to board
+    anvil test tb/<tb>.v             Run testbench
+    anvil clean                      Remove build/
+    anvil status                     Show project info
+    anvil boards                     List boards
+    anvil modules                    List modules
+    anvil addmodule <name> ...       Add module(s)
+    anvil removemodule <name> ...    Remove module(s)
+    anvil installmodule              Install current dir as module
 """
 
 import subprocess
@@ -74,7 +74,7 @@ def load_modules_registry():
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         boards = load_boards()
-        print("[ERROR] No config.json. Run: fpga init --board <name>")
+        print("[ERROR] No config.json. Run: anvil init --board <name>")
         print(f"        Available: {', '.join(boards.keys())}")
         sys.exit(1)
     with open(CONFIG_FILE) as f:
@@ -327,7 +327,7 @@ def build_makefile(config):
     raw_sources = collect_sources(config=config)
 
     # Project-relative paths get ${current_dir}/ prefix; absolute paths (modules
-    # in ~/opt/fpga/modules/...) are passed as-is.
+    # in ~/opt/anvil/modules/...) are passed as-is.
     sources = [
         s if os.path.isabs(s) else f"${{current_dir}}/{s}"
         for s in raw_sources
@@ -441,7 +441,7 @@ def cmd_init(args):
             example_name = args[idx + 1]
 
     if not board_name or board_name not in boards:
-        print("[ERROR] Specify a board: fpga init --board <name> [--example <name>]")
+        print("[ERROR] Specify a board: anvil init --board <name> [--example <name>]")
         print(f"        Available: {', '.join(boards.keys())}")
         sys.exit(1)
 
@@ -449,8 +449,8 @@ def cmd_init(args):
     name  = os.path.basename(os.getcwd())
     xdc   = board["xdc"]
 
-    print(f"[FPGA] Initializing project: {name}")
-    print(f"[FPGA] Board: {board_name} -- {board['description']}")
+    print(f"[Anvil] Initializing project: {name}")
+    print(f"[Anvil] Board: {board_name} -- {board['description']}")
 
     # Validate example if specified
     if example_name:
@@ -460,7 +460,7 @@ def cmd_init(args):
             print(f"[ERROR] Example '{example_name}' not found for {board_name}")
             print(f"        Available: {', '.join(available) if available else 'none'}")
             sys.exit(1)
-        print(f"[FPGA] Example: {example_name}")
+        print(f"[Anvil] Example: {example_name}")
         copy_example(board_name, example_name, ".")
 
     # Load config from example if present, else create fresh
@@ -486,7 +486,7 @@ def cmd_init(args):
     if not os.path.exists(xdc):
         if os.path.exists(xdc_src):
             shutil.copy(xdc_src, xdc)
-            print(f"[FPGA] Copied XDC: {xdc}")
+            print(f"[Anvil] Copied XDC: {xdc}")
         else:
             with open(xdc, "w") as f:
                 f.write(f"# XDC constraints for {board_name}\n")
@@ -513,16 +513,16 @@ def cmd_init(args):
                 f.write(MAIN_CPP_TEMPLATE)
             with open(os.path.join(FW_INC, "soc.hpp"), "w") as f:
                 f.write(SOC_HPP_TEMPLATE)
-            print(f"[FPGA] SoC '{soc_key}' detected -- created firmware/ template")
+            print(f"[Anvil] SoC '{soc_key}' detected -- created firmware/ template")
 
     build_makefile(config)
 
-    print("[FPGA] Done!")
+    print("[Anvil] Done!")
     if example_name:
         print(f"  Example '{example_name}' loaded -- ready to build!")
     else:
         print(f"  Files: config.json, top.sv, {xdc}, Makefile, tb/, common/")
-        print(f"  Next: fpga addmodule <module>")
+        print(f"  Next: anvil addmodule <module>")
 
 def cmd_initmodule(args):
     module_name = None
@@ -532,10 +532,10 @@ def cmd_initmodule(args):
             module_name = args[idx + 1]
 
     if not module_name:
-        print("[ERROR] Specify module name: fpga init --module <name>")
+        print("[ERROR] Specify module name: anvil init --module <name>")
         sys.exit(1)
 
-    print(f"[FPGA] Creating module: {module_name}")
+    print(f"[Anvil] Creating module: {module_name}")
 
     meta = {
         "name":        module_name,
@@ -557,13 +557,13 @@ def cmd_initmodule(args):
 
     os.makedirs(TB_DIR, exist_ok=True)
 
-    print("[FPGA] Done!")
+    print("[Anvil] Done!")
     print(f"  module.json, {created}, tb/")
-    print(f"  When ready: fpga installmodule")
+    print(f"  When ready: anvil installmodule")
 
 def cmd_addmodule(args):
     if not args:
-        print("[ERROR] Specify module(s): fpga addmodule <name> ...")
+        print("[ERROR] Specify module(s): anvil addmodule <name> ...")
         sys.exit(1)
 
     registry = load_modules_registry()
@@ -578,10 +578,10 @@ def cmd_addmodule(args):
                 to_add.append(key)
 
     if not to_add:
-        print("[FPGA] All requested modules already present.")
+        print("[Anvil] All requested modules already present.")
         return
 
-    print(f"[FPGA] Resolving dependencies...")
+    print(f"[Anvil] Resolving dependencies...")
     for key in to_add:
         print(f"  + {key}")
 
@@ -597,19 +597,19 @@ def cmd_addmodule(args):
             f.write(MAIN_CPP_TEMPLATE)
         with open(os.path.join(FW_INC, "soc.hpp"), "w") as f:
             f.write(SOC_HPP_TEMPLATE)
-        print(f"[FPGA] SoC '{soc_key}' detected -- created firmware/ template")
+        print(f"[Anvil] SoC '{soc_key}' detected -- created firmware/ template")
 
         if "ram_addr_bits" not in config.get("params", {}):
             config.setdefault("params", {})["ram_addr_bits"] = 11
             save_config(config)
-            print(f"[FPGA] Default params.ram_addr_bits = 11 (8KB RAM)")
+            print(f"[Anvil] Default params.ram_addr_bits = 11 (8KB RAM)")
 
     build_makefile(config)
-    print(f"[FPGA] Added {len(to_add)} module(s).")
+    print(f"[Anvil] Added {len(to_add)} module(s).")
 
 def cmd_removemodule(args):
     if not args:
-        print("[ERROR] Specify module(s): fpga removemodule <name> ...")
+        print("[ERROR] Specify module(s): anvil removemodule <name> ...")
         sys.exit(1)
 
     config  = load_config()
@@ -637,7 +637,7 @@ def cmd_removemodule(args):
     config["modules"] = [m for m in current if m not in to_remove]
     save_config(config)
     build_makefile(config)
-    print(f"[FPGA] Removed: {', '.join(removed)}")
+    print(f"[Anvil] Removed: {', '.join(removed)}")
 
 def cmd_modules(args):
     registry = load_modules_registry()
@@ -645,7 +645,7 @@ def cmd_modules(args):
     if os.path.exists(CONFIG_FILE):
         config  = load_config()
         current = config.get("modules", [])
-        print(f"[FPGA] Modules in '{config['project']}':")
+        print(f"[Anvil] Modules in '{config['project']}':")
         if current:
             for m in current:
                 meta, _, _ = load_module_meta(m)
@@ -654,7 +654,7 @@ def cmd_modules(args):
             print("  (none)")
         print()
 
-    print("[FPGA] Available modules:")
+    print("[Anvil] Available modules:")
     for name, info in registry.items():
         ver        = info.get("latest", "?")
         key        = f"{name}@{ver}"
@@ -665,7 +665,7 @@ def cmd_modules(args):
 
 def cmd_installmodule(args):
     if not os.path.exists("module.json"):
-        print("[ERROR] No module.json. Run: fpga init --module <name>")
+        print("[ERROR] No module.json. Run: anvil init --module <name>")
         sys.exit(1)
 
     with open("module.json") as f:
@@ -678,13 +678,13 @@ def cmd_installmodule(args):
 
     v_files  = get_v_files(".")
     sv_files = get_sv_files(".")
-    print(f"[FPGA] Found {len(v_files)} .v + {len(sv_files)} .sv file(s)")
+    print(f"[Anvil] Found {len(v_files)} .v + {len(sv_files)} .sv file(s)")
     if os.path.exists("soc.json"):
-        print(f"[FPGA] SoC module detected (soc.json)")
+        print(f"[Anvil] SoC module detected (soc.json)")
 
     if os.path.exists(dst):
-        if input(f"[FPGA] '{folder}' exists. Overwrite? [y/N] ").lower() != "y":
-            print("[FPGA] Aborted.")
+        if input(f"[Anvil] '{folder}' exists. Overwrite? [y/N] ").lower() != "y":
+            print("[Anvil] Aborted.")
             sys.exit(0)
         shutil.rmtree(dst)
 
@@ -692,7 +692,7 @@ def cmd_installmodule(args):
         os.getcwd(), dst,
         ignore=shutil.ignore_patterns("build", "*.vcd", "__pycache__", ".git")
     )
-    print(f"[FPGA] Installed: {folder}")
+    print(f"[Anvil] Installed: {folder}")
 
     registry = load_modules_registry()
     if module_name not in registry:
@@ -709,7 +709,7 @@ def cmd_installmodule(args):
     with open(MODULES_FILE, "w") as f:
         json.dump(registry, f, indent=2)
 
-    print(f"[FPGA] Use with: fpga addmodule {module_name}")
+    print(f"[Anvil] Use with: anvil addmodule {module_name}")
 
 def cmd_compile(args):
     """Build firmware: C++ -> ELF -> mem -> ram.v"""
@@ -718,8 +718,8 @@ def cmd_compile(args):
     soc_dir, soc_cfg, soc_key = find_soc_module(resolved)
 
     if not soc_dir:
-        print("[FPGA] No SoC module in project -- skipping firmware build")
-        print("       Add one with: fpga addmodule <soc-module>")
+        print("[Anvil] No SoC module in project -- skipping firmware build")
+        print("       Add one with: anvil addmodule <soc-module>")
         return
 
     if not os.path.isdir(FW_SRC):
@@ -747,7 +747,7 @@ def cmd_compile(args):
     mem_out = os.path.join(BUILD_FW_DIR, "firmware.mem")
     ram_out = os.path.join(BUILD_FW_DIR, "ram.v")
 
-    print(f"[FPGA] Compiling firmware (SoC: {soc_key})")
+    print(f"[Anvil] Compiling firmware (SoC: {soc_key})")
     print(f"  Sources: {', '.join(os.path.basename(f) for f in src_files)}")
     for k, v in defsyms.items():
         print(f"  Defsym:  {k} = 0x{v:x}")
@@ -781,7 +781,7 @@ def cmd_compile(args):
         "-o", ram_out
     ], check=True)
 
-    print(f"[FPGA] Firmware -> {ram_out}")
+    print(f"[Anvil] Firmware -> {ram_out}")
 
 def cmd_synth(args):
     """Synthesize FPGA bitstream."""
@@ -790,9 +790,9 @@ def cmd_synth(args):
 
     build_makefile(config)
 
-    print(f"[FPGA] Synthesizing for {config['board']}...")
+    print(f"[Anvil] Synthesizing for {config['board']}...")
     if config.get("modules"):
-        print(f"[FPGA] Modules: {', '.join(config['modules'])}")
+        print(f"[Anvil] Modules: {', '.join(config['modules'])}")
 
     t0 = time.time()
     conda_run(f"cd {os.getcwd()} && TARGET={target} make")
@@ -800,7 +800,7 @@ def cmd_synth(args):
 
     bit = find_bitstream(target)
     if bit:
-        print(f"[FPGA] Done in {elapsed:.1f}s -- {bit}")
+        print(f"[Anvil] Done in {elapsed:.1f}s -- {bit}")
     else:
         print("[ERROR] No .bit file produced")
         sys.exit(1)
@@ -822,9 +822,9 @@ def cmd_program(args):
 
     bit = find_bitstream(target)
     if not bit:
-        print("[ERROR] No bitstream. Run: fpga synth")
+        print("[ERROR] No bitstream. Run: anvil synth")
         sys.exit(1)
-    print(f"[FPGA] Bitstream: {bit}")
+    print(f"[Anvil] Bitstream: {bit}")
 
     devices = get_usb_devices()
     if not devices:
@@ -832,20 +832,20 @@ def cmd_program(args):
         sys.exit(1)
 
     if len(devices) == 1:
-        print(f"[FPGA] Device: {devices[0]}")
+        print(f"[Anvil] Device: {devices[0]}")
     else:
-        print("[FPGA] Multiple devices:")
+        print("[Anvil] Multiple devices:")
         for i, d in enumerate(devices):
             print(f"  [{i}] {d}")
         int(input("Select: "))
 
-    print(f"[FPGA] Programming {ofl_board}...")
+    print(f"[Anvil] Programming {ofl_board}...")
     run(f"sudo {OPENFPGALOADER} -b {ofl_board} {bit}")
-    print(f"[FPGA] Done! UART on /dev/ttyUSB1")
+    print(f"[Anvil] Done! UART on /dev/ttyUSB1")
 
 def cmd_test(args):
     if not args:
-        print("[ERROR] Usage: fpga test [src.{v,sv} ...] tb/<tb>.{v,sv}")
+        print("[ERROR] Usage: anvil test [src.{v,sv} ...] tb/<tb>.{v,sv}")
         sys.exit(1)
 
     tb_file = None
@@ -907,7 +907,7 @@ def cmd_test(args):
 
     tb_base = os.path.basename(tb_file)
     tb_name = tb_base.rsplit(".", 1)[0]   # strip .v or .sv
-    out = f"/tmp/fpga_test_{tb_name}.vvp"
+    out = f"/tmp/anvil_test_{tb_name}.vvp"
     vcd_file = os.path.join(TB_DIR, f"{tb_name}.vcd")
 
     result = subprocess.run(
@@ -931,14 +931,14 @@ def cmd_test(args):
 def cmd_clean(args):
     if os.path.exists(BUILD_DIR):
         shutil.rmtree(BUILD_DIR)
-        print("[FPGA] Cleaned build/")
+        print("[Anvil] Cleaned build/")
     else:
-        print("[FPGA] Nothing to clean.")
+        print("[Anvil] Nothing to clean.")
 
 def cmd_status(args):
     boards = load_boards()
     if not os.path.exists(CONFIG_FILE):
-        print("[FPGA] No project here. Run: fpga init --board <name>")
+        print("[Anvil] No project here. Run: anvil init --board <name>")
         print(f"       Boards: {', '.join(boards.keys())}")
         return
 
@@ -952,7 +952,7 @@ def cmd_status(args):
     has_fw = os.path.isdir(FW_SRC)
     fw_built = os.path.exists(os.path.join(BUILD_FW_DIR, "ram.v"))
 
-    print(f"[FPGA] Project   : {config['project']}")
+    print(f"[Anvil] Project   : {config['project']}")
     print(f"       Board     : {config['board']} -- {config['description']}")
     print(f"       Modules   : {', '.join(mods) if mods else 'none'}")
     print(f"       SoC       : {soc_key or 'none'}")
@@ -970,7 +970,7 @@ def cmd_examples(args):
             board_name = args[idx + 1]
 
     if not board_name:
-        print("[ERROR] Specify a board: fpga examples --board <name>")
+        print("[ERROR] Specify a board: anvil examples --board <name>")
         print(f"        Available: {', '.join(boards.keys())}")
         sys.exit(1)
 
@@ -981,20 +981,20 @@ def cmd_examples(args):
 
     examples = get_examples_for_board(board_name)
     if not examples:
-        print(f"[FPGA] No examples found for {board_name}")
+        print(f"[Anvil] No examples found for {board_name}")
         return
 
-    print(f"[FPGA] Examples for {board_name}:")
+    print(f"[Anvil] Examples for {board_name}:")
     for ex in examples:
         desc = get_example_description(board_name, ex)
         desc_str = f" -- {desc}" if desc else ""
         print(f"  {ex:<20}{desc_str}")
     print()
-    print(f"  Usage: fpga init --board {board_name} --example <name>")
+    print(f"  Usage: anvil init --board {board_name} --example <name>")
 
 def cmd_boards(args):
     boards = load_boards()
-    print("[FPGA] Supported boards:")
+    print("[Anvil] Supported boards:")
     for name, b in boards.items():
         print(f"  {name:<20} {b['description']}")
 
@@ -1017,7 +1017,7 @@ COMMANDS = {
 }
 
 def usage():
-    print("Usage: fpga <command> [args]")
+    print("Usage: anvil <command> [args]")
     print()
     for name, (_, desc) in COMMANDS.items():
         print(f"  {name:<14} {desc}")
