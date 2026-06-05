@@ -1,6 +1,6 @@
 # Anvil — Open-Source FPGA CLI Tool
 
-Command-line tool for synthesizing and programming FPGAs using the open-source F4PGA toolchain (Yosys + VPR). Designed for use on Windows via WSL2.
+Command-line tool for synthesizing and programming FPGAs using the open-source F4PGA toolchain (Yosys + VPR). Runs on any Linux system; on Windows it runs under WSL2.
 
 ---
 
@@ -35,9 +35,9 @@ anvil --help
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| F4PGA + Conda | Synthesis & place/route | See F4PGA WSL Setup Guide |
+| F4PGA + Conda | Synthesis & place/route | See F4PGA Setup Guide |
 | openFPGALoader | Board programming | Built from source |
-| usbipd-win | USB forwarding to WSL | `winget install usbipd` (Windows) |
+| usbipd-win *(WSL only)* | Forward the USB board into WSL — **not needed on native Linux** | `winget install usbipd` (Windows) |
 
 ---
 
@@ -105,7 +105,7 @@ anvil compile
 
 Output bitstream is saved to `build/<target>/top.bit`.
 
-Typical times on WSL2 (Nexys A7 100T):
+Typical times (Nexys A7 100T):
 - Simple combinational design: ~20 seconds
 - PicoSoC demo: ~5 minutes
 
@@ -114,22 +114,27 @@ Typical times on WSL2 (Nexys A7 100T):
 ### `anvil program`
 Upload the bitstream to the connected board.
 
+Connect the board via USB, make sure its power switch is ON, then run:
+
 ```bash
 anvil program
 ```
 
-**Before running on Windows/WSL2:**
+> **Note:** The board power switch must be ON.
 
-1. Connect Nexys A7 via USB
+#### WSL/Windows only — forward the USB device
+
+On native Linux this step is **not needed** — the board is visible directly. Under WSL2 the USB board must first be forwarded from Windows with usbipd-win:
+
+1. Connect the board via USB
 2. In PowerShell (admin):
    ```powershell
-   usbipd list                       # find Nexys (0403:6010)
+   usbipd list                       # find the board (e.g. 0403:6010)
    usbipd bind --busid <BUSID>
    usbipd attach --wsl --busid <BUSID>
    ```
 3. Run `anvil program` in WSL
 
-> **Note:** The board power switch must be ON.
 > Re-run `usbipd attach` after each replug or power cycle.
 
 ---
@@ -174,8 +179,8 @@ nano blinky.xdc
 # 4. Build
 anvil compile
 
-# 5. Attach USB (PowerShell admin on Windows)
-#    usbipd attach --wsl --busid <BUSID>
+# 5. (WSL/Windows only — skip on native Linux) Forward USB from Windows
+#    PowerShell (admin):  usbipd attach --wsl --busid <BUSID>
 
 # 6. Program
 anvil program
@@ -212,9 +217,9 @@ anvil clean
 |---------|----------|
 | `No config.json found` | Run `anvil init --board <name>` first |
 | `ValueError: max() arg is an empty sequence` | XDC has no active pin constraints — uncomment the pins you use |
-| `Error: no device found` | Board not powered on, or USB not attached via usbipd |
+| `Error: no device found` | Board not powered on (on WSL: also check USB is attached via usbipd) |
 | `symbiflow_synth: not found` | Conda env not activated — check F4PGA installation |
-| BUSID changed after replug | Run `usbipd list` and `usbipd attach` with new BUSID |
+| BUSID changed after replug *(WSL only)* | Run `usbipd list` and `usbipd attach` with new BUSID |
 | Clock SDC error | Remove `create_clock` from XDC if your design has no clock port |
 
 ---
