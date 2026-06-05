@@ -326,12 +326,23 @@ def build_makefile(config):
 
     raw_sources = collect_sources(config=config)
 
-    # Project-relative paths get ${current_dir}/ prefix; absolute paths (modules
-    # in ~/opt/anvil/modules/...) are passed as-is.
-    sources = [
-        s if os.path.isabs(s) else f"${{current_dir}}/{s}"
-        for s in raw_sources
-    ]
+
+    home = os.path.expanduser("~")
+    if SCRIPT_DIR == home or SCRIPT_DIR.startswith(home + os.sep):
+        anvil_home_default = os.path.join("$(HOME)", os.path.relpath(SCRIPT_DIR, home))
+    else:
+        anvil_home_default = SCRIPT_DIR
+
+
+    def to_make_path(s):
+        if s == MODULES_DIR or s.startswith(MODULES_DIR + os.sep):
+            rel = os.path.relpath(s, MODULES_DIR)
+            return f"$(ANVIL_HOME)/modules/{rel}"
+        if os.path.isabs(s):
+            return s
+        return f"${{current_dir}}/{s}"
+
+    sources = [to_make_path(s) for s in raw_sources]
 
     if not sources:
         sources = ["${current_dir}/*.v"]
@@ -340,6 +351,7 @@ def build_makefile(config):
     with open("Makefile", "w") as f:
         f.write(
             f"current_dir := ${{CURDIR}}\n"
+            f"ANVIL_HOME ?= {anvil_home_default}\n"
             f"TARGET := {target}\n"
             f"TOP := top\n"
             f"SOURCES := {sources_str}\n"

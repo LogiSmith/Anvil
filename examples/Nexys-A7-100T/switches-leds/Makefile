@@ -1,4 +1,5 @@
 current_dir := ${CURDIR}
+ANVIL_HOME ?= $(HOME)/opt/anvil
 TARGET := nexys4ddr
 TOP := top
 SOURCES := ${current_dir}/*.v
