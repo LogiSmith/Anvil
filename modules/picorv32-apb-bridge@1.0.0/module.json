@@ -1,0 +1,6 @@
+{
+  "name": "picorv32-apb-bridge",
+  "description": "Bridges PicoRV32 native memory interface to APB master",
+  "version": "1.0.0",
+  "depends": ["picorv32", "apb"]
+}

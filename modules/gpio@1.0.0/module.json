@@ -1,0 +1,6 @@
+{
+  "name": "gpio",
+  "description": "gpio module",
+  "version": "1.0.0",
+  "depends": []
+}

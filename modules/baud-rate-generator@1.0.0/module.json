@@ -1,0 +1,6 @@
+{
+  "name": "baud-rate-generator",
+  "description": "baud-rate-generator module",
+  "version": "1.0.0",
+  "depends": []
+}

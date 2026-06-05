@@ -1,0 +1,17 @@
+{
+  "project": "uart-hw-test",
+  "board": "Nexys-A7-100T",
+  "top": "top",
+  "modules": [
+    "baud-rate-generator@1.0.0",
+    "uart-tx@1.0.0",
+    "uart-rx@1.0.0",
+    "uart@1.0.0"
+  ],
+  "description": "Digilent Nexys A7 100T (xc7a100t)",
+  "target": "nexys4ddr",
+  "partname": "xc7a100tcsg324-1",
+  "device": "artix7",
+  "ofl_board": "nexys_a7_100",
+  "xdc": "Nexys-A7-100T-Master.xdc"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "apb",
+  "description": "Generic AMBA APB master and interconnect",
+  "version": "1.0.0",
+  "depends": []
+}

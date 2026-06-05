@@ -1,0 +1,6 @@
+{
+  "name": "picorv32-soc",
+  "description": "PicoRV32 SoC — core + APB bridge + 64-slot MMIO interconnect (FPRO-style).",
+  "version": "1.0.0",
+  "depends": ["picorv32-core", "apb", "picorv32-apb-bridge"]
+}

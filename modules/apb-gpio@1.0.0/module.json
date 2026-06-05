@@ -1,0 +1,6 @@
+{
+  "name": "apb-gpio",
+  "description": "APB wrapper for GPIO peripheral",
+  "version": "1.0.0",
+  "depends": ["gpio"]
+}

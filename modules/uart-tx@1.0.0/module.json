@@ -1,0 +1,6 @@
+{
+  "name": "uart-tx",
+  "description": "UART transmitter — 8N1, LSB first",
+  "version": "1.0.0",
+  "depends": []
+}

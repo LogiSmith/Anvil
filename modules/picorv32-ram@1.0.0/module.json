@@ -1,0 +1,6 @@
+{
+  "name": "picorv32-ram",
+  "description": "picorv32-ram module",
+  "version": "1.0.0",
+  "depends": []
+}

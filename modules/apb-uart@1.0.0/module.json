@@ -1,0 +1,6 @@
+{
+  "name": "apb-uart",
+  "description": "APB UART peripheral — generic APB slave wrapper around uart",
+  "version": "1.0.0",
+  "depends": ["uart"]
+}

@@ -1,0 +1,114 @@
+{
+  "picorv32": {
+    "description": "PicoRV32 - Size-optimized RISC-V CPU core",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "picorv32-apb": {
+    "description": "APB bridge for PicoRV32 native memory interface",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "gpio": {
+    "description": "APB GPIO peripheral",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "uart": {
+    "description": "APB UART peripheral",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "timer": {
+    "description": "APB Timer peripheral",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "blinky": {
+    "description": "blinky module",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "picorv32-ram": {
+    "description": "picorv32-ram module",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "picorv32-apb-bridge": {
+    "description": "Bridges PicoRV32 native memory interface to APB master",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "apb": {
+    "description": "Generic AMBA APB master and interconnect",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "baud-rate-generator": {
+    "description": "baud-rate-generator module",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "uart-tx": {
+    "description": "UART transmitter \u2014 8N1, LSB first",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "uart-rx": {
+    "description": "UART receiver \u2014 8N1, 16x oversampling",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "apb-uart": {
+    "description": "APB UART peripheral \u2014 generic APB slave wrapper around uart",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "apb-gpio": {
+    "description": "APB wrapper for GPIO peripheral",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "picorv32-core": {
+    "description": "PicoRV32 CPU + internal RAM with exposed IO bus.",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  },
+  "picorv32-soc": {
+    "description": "PicoRV32 SoC \u2014 core + APB bridge + 64-slot MMIO interconnect (FPRO-style).",
+    "versions": [
+      "1.0.0"
+    ],
+    "latest": "1.0.0"
+  }
+}

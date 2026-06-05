@@ -1,0 +1,6 @@
+{
+  "name": "uart-rx",
+  "description": "UART receiver — 8N1, 16x oversampling",
+  "version": "1.0.0",
+  "depends": []
+}

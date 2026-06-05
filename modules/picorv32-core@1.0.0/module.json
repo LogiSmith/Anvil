@@ -1,0 +1,6 @@
+{
+  "name": "picorv32-core",
+  "description": "PicoRV32 CPU + internal RAM with exposed IO bus.",
+  "version": "1.0.0",
+  "depends": ["picorv32"]
+}

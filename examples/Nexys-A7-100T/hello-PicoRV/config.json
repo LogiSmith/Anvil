@@ -1,0 +1,25 @@
+{
+  "project": "soc-hello-v2",
+  "board": "Nexys-A7-100T",
+  "modules": [
+    "picorv32@1.0.0",
+    "apb@1.0.0",
+    "picorv32-apb-bridge@1.0.0",
+    "baud-rate-generator@1.0.0",
+    "uart-tx@1.0.0",
+    "uart-rx@1.0.0",
+    "uart@1.0.0",
+    "apb-uart@1.0.0",
+    "picorv32-core@1.0.0",
+    "picorv32-soc@1.0.0"
+  ],
+  "params": {
+    "ram_addr_bits": 11
+  },
+  "description": "Digilent Nexys A7 100T (xc7a100t)",
+  "target": "nexys4ddr",
+  "partname": "xc7a100tcsg324-1",
+  "device": "artix7",
+  "ofl_board": "nexys_a7_100",
+  "xdc": "Nexys-A7-100T-Master.xdc"
+}

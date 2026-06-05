@@ -1,0 +1,6 @@
+{
+  "name": "uart",
+  "description": "Full UART — TX + RX with baud rate generator",
+  "version": "1.0.0",
+  "depends": ["baud-rate-generator", "uart-tx", "uart-rx"]
+}

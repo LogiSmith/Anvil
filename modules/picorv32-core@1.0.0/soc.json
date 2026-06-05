@@ -1,0 +1,23 @@
+{
+  "description": "PicoRV32 RISC-V SoC build configuration",
+  "cpu": {
+    "compiler": "riscv64-unknown-elf-g++",
+    "objcopy":  "riscv64-unknown-elf-objcopy",
+    "march":    "rv32i",
+    "mabi":     "ilp32"
+  },
+  "cflags": [
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-fno-threadsafe-statics",
+    "-Os",
+    "-Wall"
+  ],
+  "ldflags": [
+    "-nostdlib",
+    "-nostartfiles"
+  ],
+  "defsyms": {
+    "__stack_top": "1 << (ram_addr_bits + 2)"
+  }
+}

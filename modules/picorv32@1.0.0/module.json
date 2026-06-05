@@ -1,0 +1,6 @@
+{
+  "name": "picorv32",
+  "description": "PicoRV32 - Size-optimized RISC-V CPU (ISC license)",
+  "version": "1.0.0",
+  "depends": []
+}
