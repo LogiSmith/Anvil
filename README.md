@@ -13,7 +13,7 @@ into the bitstream. Runs on Linux (and Windows under WSL2).
 
 ## Documentation
 
-- 📖 **Installation & usage** — <!-- TODO: link to organisation-level Docs -->
+- 📖 **Installation & usage** — <https://logismith.github.io/Docs/>
   *(user guide: installing the toolchain, getting started, tutorials)*
 - 🛠️ **Developer docs** — <https://logismith.github.io/Anvil/>
   *(architecture, file-format reference, module system, contributing)*

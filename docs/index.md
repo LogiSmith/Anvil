@@ -6,7 +6,7 @@ build flow works, and the schemas of the JSON files it reads and writes.
 !!! info "Looking for install / usage docs?"
     End-user documentation — installing the full toolchain (F4PGA, sv2v,
     openFPGALoader), getting started and tutorials — lives in the
-    organisation-level Docs. <!-- TODO: link to org Docs -->
+    [LogiSmith Docs](https://logismith.github.io/Docs/).
     This site documents the **code** of the `anvil` tool itself, for people
     working on or integrating with it.
 
