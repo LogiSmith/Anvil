@@ -1,10 +1,11 @@
 site_name: Anvil — Developer Docs
 site_description: Internals and file-format reference for the Anvil FPGA CLI
 site_author: LogiSmith
+site_url: https://logismith.github.io/Anvil/
 copyright: "© 2025 LogiSmith — MIT License"
 
-# repo_url: https://github.com/<org>/anvil   # TODO: set once the repo is public
-# repo_name: anvil
+repo_url: https://github.com/LogiSmith/Anvil
+repo_name: LogiSmith/Anvil
 
 theme:
   name: material
