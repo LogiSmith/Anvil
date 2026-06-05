@@ -24,6 +24,7 @@ into the bitstream. Runs on Linux (and Windows under WSL2).
 > installation guide above.
 
 ```bash
+anvil doctor                       # verify the toolchain is installed
 mkdir blinky && cd blinky
 anvil init --board Nexys-A7-100T   # scaffold project
 # edit top.sv and the .xdc pin constraints

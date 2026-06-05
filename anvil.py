@@ -24,6 +24,7 @@ Commands:
     anvil test tb/<tb>.v             Run testbench
     anvil clean                      Remove build/
     anvil status                     Show project info
+    anvil doctor                     Check external tool dependencies
     anvil boards                     List boards
     anvil modules                    List modules
     anvil addmodule <name> ...       Add module(s)
@@ -981,6 +982,80 @@ def cmd_status(args):
     print(f"       Firmware  : {'present' if has_fw else 'none'} {'(built)' if fw_built else ''}")
     print(f"       Bitstream : {bit or 'not built'}")
 
+def _which(*names):
+    """First resolvable binary among names (PATH lookup), else None."""
+    for n in names:
+        p = shutil.which(n)
+        if p:
+            return p
+    return None
+
+def cmd_doctor(args):
+    """Check that the external tools Anvil relies on are available."""
+    rows     = []   # (status, label, detail, hint)
+    failures = 0
+
+    def add(status, label, detail, hint=""):
+        nonlocal failures
+        if status == "FAIL":
+            failures += 1
+        rows.append((status, label, detail, hint))
+
+    # Informational
+    add("OK", "Python", sys.version.split()[0])
+
+    # Required: .sv -> .v conversion (every build)
+    sv2v = shutil.which("sv2v") or (SV2V_HOME if os.path.exists(SV2V_HOME) else None)
+    if sv2v:
+        add("OK", "sv2v", sv2v)
+    else:
+        add("FAIL", "sv2v", "not found",
+            "PATH or ~/opt/sv2v/sv2v -- https://github.com/zachjs/sv2v/releases")
+
+    # Required: synthesis / place & route
+    if os.path.exists(CONDA_SH):
+        if os.path.isdir(F4PGA_INSTALL):
+            add("OK", "F4PGA / Conda", f"{CONDA_SH} (env: {CONDA_ENV})")
+        else:
+            add("WARN", "F4PGA / Conda", f"{CONDA_SH} (env: {CONDA_ENV})",
+                f"install dir missing: {F4PGA_INSTALL}")
+    else:
+        add("FAIL", "F4PGA / Conda", "conda.sh not found",
+            f"expected {CONDA_SH} -- see the F4PGA setup guide")
+
+    # Optional: anvil test
+    if _which("iverilog") and _which("vvp"):
+        add("OK", "Icarus Verilog", _which("iverilog"))
+    else:
+        add("WARN", "Icarus Verilog", "iverilog/vvp not found",
+            "needed for `anvil test` -- e.g. apt install iverilog")
+
+    # Optional: anvil program
+    ofl = (OPENFPGALOADER if os.path.exists(OPENFPGALOADER) else None) or _which("openFPGALoader")
+    if ofl:
+        add("OK", "openFPGALoader", ofl)
+    else:
+        add("WARN", "openFPGALoader", "not found",
+            "needed for `anvil program` -- build from source")
+
+    # Optional: SoC firmware (anvil compile). Default toolchain; soc.json may override.
+    if _which("riscv64-unknown-elf-g++") and _which("riscv64-unknown-elf-objcopy"):
+        add("OK", "RISC-V toolchain", _which("riscv64-unknown-elf-g++"))
+    else:
+        add("WARN", "RISC-V toolchain", "riscv64-unknown-elf-g++ not found",
+            "needed for SoC firmware (anvil compile)")
+
+    print("[Anvil] Environment check\n")
+    for status, label, detail, hint in rows:
+        print(f"  [{status:>4}]  {label:<17} {detail}")
+        if hint:
+            print(f"           -> {hint}")
+    print()
+    if failures:
+        print(f"[Anvil] {failures} required tool(s) missing -- synth will not work until fixed.")
+        sys.exit(1)
+    print("[Anvil] All required tools present.")
+
 def cmd_examples(args):
     boards     = load_boards()
     board_name = None
@@ -1029,6 +1104,7 @@ COMMANDS = {
     "test":          (cmd_test,          "test tb/<tb>.v                Run testbench"),
     "clean":         (cmd_clean,         "                              Remove build/"),
     "status":        (cmd_status,        "                              Show project info"),
+    "doctor":        (cmd_doctor,        "                              Check external tool dependencies"),
     "boards":        (cmd_boards,        "                              List boards"),
     "examples":      (cmd_examples,      "examples --board <name>       List examples for board"),
     "modules":       (cmd_modules,       "                              List modules"),
