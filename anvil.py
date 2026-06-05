@@ -25,6 +25,8 @@ Commands:
     anvil clean                      Remove build/
     anvil status                     Show project info
     anvil doctor                     Check external tool dependencies
+    anvil update                     Update the whole toolchain (Anvil + deps)
+    anvil version                    Print Anvil version
     anvil boards                     List boards
     anvil modules                    List modules
     anvil addmodule <name> ...       Add module(s)
@@ -53,6 +55,7 @@ CONDA_ENV      = "xc7"
 F4PGA_INSTALL  = os.path.expanduser("~/opt/f4pga")
 F4PGA_EXAMPLES = os.path.expanduser("~/f4pga-examples")
 OPENFPGALOADER = "/usr/local/bin/openFPGALoader"
+TOOLCHAIN_INSTALLER = "https://raw.githubusercontent.com/LogiSmith/toolchain-setup/main/install.sh"
 
 CONFIG_FILE    = "config.json"
 TB_DIR         = "tb"
@@ -1056,6 +1059,40 @@ def cmd_doctor(args):
         sys.exit(1)
     print("[Anvil] All required tools present.")
 
+def read_version():
+    vfile = os.path.join(SCRIPT_DIR, "VERSION")
+    if os.path.exists(vfile):
+        with open(vfile) as f:
+            return f.read().strip()
+    return "unknown"
+
+def git_short_commit():
+    try:
+        r = subprocess.run(
+            ["git", "-C", SCRIPT_DIR, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+def cmd_version(args):
+    """Print the installed Anvil version."""
+    commit = git_short_commit()
+    print(f"anvil {read_version()}" + (f" ({commit})" if commit else ""))
+
+def cmd_update(args):
+    """Update the whole toolchain (Anvil + dependencies) via the toolchain-setup
+    installer, which is idempotent and update-aware. The long integration build
+    is skipped by default (doctor still runs); extra args pass through, e.g.
+    `anvil update --minimal`."""
+    flags = ("--no-test " + " ".join(args)).strip()
+    cmd = f"curl -fsSL {TOOLCHAIN_INSTALLER} | bash -s -- {flags}"
+    print("[Anvil] Updating toolchain (Anvil + dependencies) via toolchain-setup...")
+    run(cmd)
+
 def cmd_examples(args):
     boards     = load_boards()
     board_name = None
@@ -1105,6 +1142,8 @@ COMMANDS = {
     "clean":         (cmd_clean,         "                              Remove build/"),
     "status":        (cmd_status,        "                              Show project info"),
     "doctor":        (cmd_doctor,        "                              Check external tool dependencies"),
+    "update":        (cmd_update,        "                              Update the whole toolchain"),
+    "version":       (cmd_version,       "                              Print Anvil version"),
     "boards":        (cmd_boards,        "                              List boards"),
     "examples":      (cmd_examples,      "examples --board <name>       List examples for board"),
     "modules":       (cmd_modules,       "                              List modules"),
@@ -1123,6 +1162,9 @@ def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
         usage()
+        sys.exit(0)
+    if args[0] in ("-v", "--version"):
+        cmd_version(args[1:])
         sys.exit(0)
     cmd = args[0]
     if cmd not in COMMANDS:
