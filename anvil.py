@@ -69,7 +69,16 @@ def load_boards():
 
 def load_modules_registry():
     with open(MODULES_FILE) as f:
-        return json.load(f)
+        registry = json.load(f)
+
+    return {
+        name: info
+        for name, info in registry.items()
+        if any(
+            os.path.isdir(os.path.join(MODULES_DIR, f"{name}@{ver}"))
+            for ver in info.get("versions", [])
+        )
+    }
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
