@@ -216,3 +216,9 @@ fpga clean
 | `symbiflow_synth: not found` | Conda env not activated — check F4PGA installation |
 | BUSID changed after replug | Run `usbipd list` and `usbipd attach` with new BUSID |
 | Clock SDC error | Remove `create_clock` from XDC if your design has no clock port |
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE). © 2025 LogiSmith.
