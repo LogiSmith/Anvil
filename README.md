@@ -51,4 +51,4 @@ See the [contributing guide](https://logismith.github.io/Anvil/contributing/).
 
 ## License
 
-Released under the [MIT License](LICENSE). © 2025 LogiSmith.
+Released under the [MIT License](LICENSE). © 2026 LogiSmith.
