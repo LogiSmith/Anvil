@@ -52,6 +52,7 @@ XDC_DIR        = os.path.join(SCRIPT_DIR, "xdc")
 EXAMPLES_DIR   = os.path.join(SCRIPT_DIR, "examples")
 CONDA_SH       = os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh")
 CONDA_ENV      = "xc7"
+FPGA_FAM       = "xc7"
 F4PGA_INSTALL  = os.path.expanduser("~/opt/f4pga")
 F4PGA_EXAMPLES = os.path.expanduser("~/f4pga-examples")
 OPENFPGALOADER = "/usr/local/bin/openFPGALoader"
@@ -333,6 +334,69 @@ def collect_sources(config=None, module_meta=None):
         print(f"[SV2V] Converted {sv2v_count} .sv file(s) -> {BUILD_CONVERTED}/")
     return sources
 
+def board_mk_block(boards):
+    """Render the TARGET -> device/part selection chain that common.mk needs.
+
+    Mirrors the upstream F4PGA chain, but generated from boards.json so a new
+    board only has to be described in one place.
+    """
+    lines = []
+    seen  = set()
+    for name, b in boards.items():
+        missing = [k for k in ("target", "vpr_device", "device", "partname", "ofl_board")
+                   if not b.get(k)]
+        if missing:
+            print(f"[WARN] Board '{name}' is missing {', '.join(missing)} -- skipped in common.mk")
+            continue
+        if b["target"] in seen:
+            print(f"[WARN] Board '{name}' reuses target '{b['target']}' -- skipped in common.mk")
+            continue
+        seen.add(b["target"])
+        lines += [
+            f"{'else ' if lines else ''}ifeq ($(TARGET),{b['target']})",
+            f"  DEVICE := {b['vpr_device']}",
+            f"  BITSTREAM_DEVICE := {b['device']}",
+            f"  PARTNAME := {b['partname']}",
+            f"  OFL_BOARD := {b['ofl_board']}",
+        ]
+    if not lines:
+        return None
+    return lines + ["else", "  $(error Unsupported board type: $(TARGET))", "endif"]
+
+def write_common_mk():
+    """Write common/common.mk -- upstream F4PGA build rules, Anvil's board table.
+
+    The upstream board chain is replaced rather than extended: boards.json is
+    the single source of truth, so a target can never resolve to a stale part.
+    Returns False when f4pga-examples is unavailable (any existing file stands).
+    """
+    src = os.path.join(F4PGA_EXAMPLES, "common", "common.mk")
+    if not os.path.exists(src):
+        return False
+
+    with open(src) as f:
+        upstream = f.read().splitlines()
+
+    block = board_mk_block(load_boards())
+    start = next((i for i, l in enumerate(upstream)
+                  if l.startswith("ifeq ($(TARGET),")), None)
+    end   = None
+    if start is not None:
+        end = next((i for i in range(start + 1, len(upstream))
+                    if upstream[i].strip() == "endif"), None)
+
+    os.makedirs("common", exist_ok=True)
+    dst = os.path.join("common", "common.mk")
+
+    if block is None or start is None or end is None:
+        print("[WARN] common.mk: upstream board table not recognized -- copied unchanged")
+        shutil.copy(src, dst)
+        return True
+
+    with open(dst, "w") as f:
+        f.write("\n".join(upstream[:start] + block + upstream[end + 1:]) + "\n")
+    return True
+
 def build_makefile(config):
     target = config["target"]
     xdc    = config["xdc"]
@@ -385,7 +449,7 @@ def conda_run(cmd):
         f"source {CONDA_SH} && "
         f"conda activate {CONDA_ENV} && "
         f"export F4PGA_INSTALL_DIR={F4PGA_INSTALL} && "
-        f"export FPGA_FAM=xc7 && "
+        f"export FPGA_FAM={FPGA_FAM} && "
         f"{cmd}"
     )
     run(f"bash -c '{full}'")
@@ -522,10 +586,9 @@ def cmd_init(args):
 
     os.makedirs(TB_DIR, exist_ok=True)
 
-    os.makedirs("common", exist_ok=True)
-    src = os.path.join(F4PGA_EXAMPLES, "common", "common.mk")
-    if os.path.exists(src):
-        shutil.copy(src, "common/common.mk")
+    if not write_common_mk() and not os.path.exists(os.path.join("common", "common.mk")):
+        print(f"[WARN] common/common.mk not written -- {F4PGA_EXAMPLES} is missing")
+        print("       `anvil synth` will fail until the toolchain is installed (anvil update)")
 
     # If example brought modules, scaffold firmware/ template if SoC detected and not present
     if config.get("modules"):
@@ -813,6 +876,9 @@ def cmd_synth(args):
     config = load_config()
     target = config["target"]
 
+    # Regenerate both: a project scaffolded by an older Anvil still has a
+    # common.mk that predates its board.
+    write_common_mk()
     build_makefile(config)
 
     print(f"[Anvil] Synthesizing for {config['board']}...")
@@ -1025,6 +1091,18 @@ def cmd_doctor(args):
     else:
         add("FAIL", "F4PGA / Conda", "conda.sh not found",
             f"expected {CONDA_SH} -- see the F4PGA setup guide")
+
+    # Required per board: the VPR arch defs the board's device resolves to.
+    # A toolchain installed before a board was added will be missing its device.
+    arch_dir = os.path.join(F4PGA_INSTALL, FPGA_FAM, "share", "f4pga", "arch")
+    wanted   = sorted({b["vpr_device"] for b in load_boards().values() if b.get("vpr_device")})
+    if wanted and os.path.isdir(arch_dir):
+        missing = [d for d in wanted if not os.path.isdir(os.path.join(arch_dir, d))]
+        if missing:
+            add("WARN", "F4PGA arch defs", f"missing: {', '.join(missing)}",
+                "boards on those devices cannot be synthesized -- run `anvil update`")
+        else:
+            add("OK", "F4PGA arch defs", ", ".join(wanted))
 
     # Optional: anvil test
     if _which("iverilog") and _which("vvp"):

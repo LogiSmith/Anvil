@@ -1,6 +1,6 @@
 {
   "project": "soc-hello-v2",
-  "board": "Nexys-A7-100T",
+  "board": "Nexys-A7-50T",
   "modules": [
     "picorv32@1.0.0",
     "apb@1.0.0",
@@ -16,11 +16,11 @@
   "params": {
     "ram_addr_bits": 11
   },
-  "description": "Digilent Nexys A7 100T (xc7a100t)",
-  "target": "nexys4ddr",
-  "vpr_device": "xc7a100t_test",
-  "partname": "xc7a100tcsg324-1",
+  "description": "Digilent Nexys A7 50T (xc7a50t)",
+  "target": "nexys_a7_50t",
+  "vpr_device": "xc7a50t_test",
+  "partname": "xc7a50tcsg324-1",
   "device": "artix7",
-  "ofl_board": "nexys_a7_100",
-  "xdc": "Nexys-A7-100T-Master.xdc"
+  "ofl_board": "nexys_a7_50",
+  "xdc": "Nexys-A7-50T-Master.xdc"
 }

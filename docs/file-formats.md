@@ -16,7 +16,7 @@ are merged in (any key not already present is copied).
 | `top` | string | no | Top module name (defaults to `top`) |
 | `modules` | string[] | no | Module refs (`name` or `name@version`) — order preserved |
 | `params` | object | no | Build parameters; values are exposed to SoC `defsyms` (e.g. `ram_addr_bits`) |
-| `description`, `target`, `partname`, `device`, `ofl_board`, `xdc` | string | yes\* | Copied from the board on `init`; consumed by the Makefile / programmer |
+| `description`, `target`, `vpr_device`, `partname`, `device`, `ofl_board`, `xdc` | string | yes\* | Copied from the board on `init`; consumed by the Makefile / programmer |
 
 \* present after `anvil init`; they originate from `boards.json`.
 
@@ -33,6 +33,7 @@ are merged in (any key not already present is copied).
   ],
   "params": { "ram_addr_bits": 11 },
   "target": "nexys4ddr",
+  "vpr_device": "xc7a100t_test",
   "partname": "xc7a100tcsg324-1",
   "device": "artix7",
   "ofl_board": "nexys_a7_100",
@@ -102,7 +103,8 @@ Global, in the repo root. One entry per supported board.
 | Field | Type | Description |
 |-------|------|-------------|
 | `description` | string | Human-readable board name |
-| `target` | string | Build target selector used by `common/common.mk` |
+| `target` | string | Build target selector; must be unique across boards |
+| `vpr_device` | string | F4PGA/VPR architecture device (e.g. `xc7a100t_test`) |
 | `partname` | string | FPGA part (e.g. `xc7a100tcsg324-1`) |
 | `device` | string | Device family for the bitstream (e.g. `artix7`) |
 | `ofl_board` | string | openFPGALoader board id (used by `anvil program`) |
@@ -113,13 +115,28 @@ Global, in the repo root. One entry per supported board.
   "Nexys-A7-100T": {
     "description": "Digilent Nexys A7 100T (xc7a100t)",
     "target": "nexys4ddr",
+    "vpr_device": "xc7a100t_test",
     "partname": "xc7a100tcsg324-1",
     "device": "artix7",
     "ofl_board": "nexys_a7_100",
     "xdc": "Nexys-A7-100T-Master.xdc"
+  },
+  "Nexys-A7-50T": {
+    "description": "Digilent Nexys A7 50T (xc7a50t)",
+    "target": "nexys_a7_50t",
+    "vpr_device": "xc7a50t_test",
+    "partname": "xc7a50tcsg324-1",
+    "device": "artix7",
+    "ofl_board": "nexys_a7_50",
+    "xdc": "Nexys-A7-50T-Master.xdc"
   }
 }
 ```
+
+These five build fields are not just metadata: `anvil init` and `anvil synth`
+generate the `TARGET` → device/part table in `common/common.mk` from this file,
+so the registry is the only place a board is described. The rest of `common.mk`
+(the build rules) is taken verbatim from the pinned `f4pga-examples` checkout.
 
 ## `modules.json` — module registry
 

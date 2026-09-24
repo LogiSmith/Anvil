@@ -4,6 +4,7 @@
   "top": "top",
   "description": "Digilent Nexys A7 100T (xc7a100t)",
   "target": "nexys4ddr",
+  "vpr_device": "xc7a100t_test",
   "partname": "xc7a100tcsg324-1",
   "device": "artix7",
   "ofl_board": "nexys_a7_100",

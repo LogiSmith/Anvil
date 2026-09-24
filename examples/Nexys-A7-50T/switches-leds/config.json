@@ -1,0 +1,12 @@
+{
+  "project": "example",
+  "board": "Nexys-A7-50T",
+  "top": "top",
+  "description": "Digilent Nexys A7 50T (xc7a50t)",
+  "target": "nexys_a7_50t",
+  "vpr_device": "xc7a50t_test",
+  "partname": "xc7a50tcsg324-1",
+  "device": "artix7",
+  "ofl_board": "nexys_a7_50",
+  "xdc": "Nexys-A7-50T-Master.xdc"
+}

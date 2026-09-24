@@ -45,9 +45,18 @@ Keep [`modules.json`](file-formats.md#modulesjson-module-registry) in sync —
 
 ## Adding a board
 
-1. Add an entry to [`boards.json`](file-formats.md#boardsjson-board-registry).
+1. Add an entry to [`boards.json`](file-formats.md#boardsjson-board-registry) —
+   including `vpr_device`, the F4PGA architecture the part belongs to. The
+   `TARGET` table in `common/common.mk` is generated from this, so no Makefile
+   needs editing.
 2. Add the master constraints file `xdc/<board>-Master.xdc`.
-3. Verify with `anvil boards`.
+3. If the board needs an architecture that is not installed yet, add it to
+   `F4PGA_DEVICES` in the [toolchain-setup](https://github.com/LogiSmith/toolchain-setup)
+   installer — otherwise synthesis fails on a machine that has never downloaded it.
+4. Optionally add examples under `examples/<board>/`; each carries its own
+   `config.json` and XDC, so they are not shared between boards.
+5. Verify with `anvil boards`, then `anvil doctor` (it reports any arch defs the
+   registry needs but the local toolchain lacks).
 
 ## Updating these docs
 

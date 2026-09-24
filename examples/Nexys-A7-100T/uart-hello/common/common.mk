@@ -5,38 +5,18 @@ BUILDDIR := ${current_dir}/build
 BOARD_BUILDDIR := ${BUILDDIR}/${TARGET}
 
 # Set board properties based on TARGET variable
-ifeq ($(TARGET),arty_35)
-  DEVICE := xc7a50t_test
-  BITSTREAM_DEVICE := artix7
-  PARTNAME := xc7a35tcsg324-1
-  OFL_BOARD := arty_a7_35t
-else ifeq ($(TARGET),arty_100)
+ifeq ($(TARGET),nexys4ddr)
   DEVICE := xc7a100t_test
   BITSTREAM_DEVICE := artix7
   PARTNAME := xc7a100tcsg324-1
-  OFL_BOARD := arty_a7_100t
-else ifeq ($(TARGET),nexys4ddr)
-  DEVICE := xc7a100t_test
-  BITSTREAM_DEVICE := artix7
-  PARTNAME := xc7a100tcsg324-1
-  OFL_BOARD := unsupported
-else ifeq ($(TARGET),zybo)
-  DEVICE := xc7z010_test
-  BITSTREAM_DEVICE := zynq7
-  PARTNAME := xc7z010clg400-1
-  OFL_BOARD := zybo_z7_10
-else ifeq ($(TARGET),nexys_video)
-  DEVICE := xc7a200t_test
-  BITSTREAM_DEVICE := artix7
-  PARTNAME := xc7a200tsbg484-1
-  OFL_BOARD := nexysVideo
-else ifeq ($(TARGET),basys3)
+  OFL_BOARD := nexys_a7_100
+else ifeq ($(TARGET),nexys_a7_50t)
   DEVICE := xc7a50t_test
   BITSTREAM_DEVICE := artix7
-  PARTNAME := xc7a35tcpg236-1
-  OFL_BOARD := $(TARGET)
+  PARTNAME := xc7a50tcsg324-1
+  OFL_BOARD := nexys_a7_50
 else
-  $(error Unsupported board type)
+  $(error Unsupported board type: $(TARGET))
 endif
 
 # Determine the type of constraint being used
