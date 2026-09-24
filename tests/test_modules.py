@@ -1,5 +1,5 @@
 import contextlib, io, os
-import shutil, sys, tempfile, unittest
+import shutil, sys, tarfile, tempfile, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fetch                                                    # noqa: E402
@@ -177,6 +177,85 @@ class TestModuleHash(TempCase):
         with open(os.path.join(b_dir, "c.v"), "wb") as f:
             f.write(b'd')
         self.assertNotEqual(fetch.module_hash(a_dir), fetch.module_hash(b_dir))
+
+
+def _tar_with(tmp_path, entries, name="a.tar.gz"):
+    p = os.path.join(tmp_path, name)
+    with tarfile.open(p, "w:gz") as t:
+        for member_name, body in entries:
+            info = tarfile.TarInfo(member_name)
+            info.size = len(body)
+            t.addfile(info, io.BytesIO(body))
+    return p
+
+
+class TestExtract(TempCase):
+    def test_extracts_a_normal_tar(self):
+        p = _tar_with(self.tmp, [("m/module.json", b"{}"), ("m/top.v", b"x")])
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        fetch.extract(p, dest)
+        self.assertTrue(os.path.isfile(os.path.join(dest, "m", "top.v")))
+
+    def test_rejects_parent_traversal(self):
+        p = _tar_with(self.tmp, [("../escaped.txt", b"nope")])
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "escaped.txt")))
+
+    def test_rejects_absolute_path(self):
+        p = _tar_with(self.tmp, [("/tmp/anvil_abs.txt", b"nope")])
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
+
+    def test_rejects_symlink(self):
+        p = os.path.join(self.tmp, "s.tar.gz")
+        with tarfile.open(p, "w:gz") as t:
+            link = tarfile.TarInfo("evil")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            t.addfile(link)
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
+
+    def test_rejects_too_many_entries(self):
+        p = _tar_with(self.tmp, [(f"m/f{i}.v", b"x") for i in range(fetch.MAX_ENTRIES + 1)])
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
+
+    def test_rejects_decompression_bomb(self):
+        p = _tar_with(self.tmp, [("m/big.v", b"\0" * (fetch.MAX_BYTES + 1))])
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
+
+    def test_extracts_a_normal_zip(self):
+        p = os.path.join(self.tmp, "a.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("m/module.json", "{}")
+            z.writestr("m/top.v", "x")
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        fetch.extract(p, dest)
+        self.assertTrue(os.path.isfile(os.path.join(dest, "m", "top.v")))
+
+    def test_zip_traversal_rejected(self):
+        p = os.path.join(self.tmp, "evil.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("../escaped.txt", "nope")
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
 
 
 if __name__ == "__main__":

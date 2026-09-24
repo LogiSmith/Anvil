@@ -4,6 +4,9 @@ import ast
 import hashlib
 import operator
 import os
+import stat
+import tarfile
+import zipfile
 
 MAX_SHIFT = 64   # a shift past this is a memory bomb, not a build parameter
 MAX_NODES = 200  # bounds recursion before it happens -- the interpreter's own limit varies
@@ -80,3 +83,70 @@ def module_hash(mod_dir):
                 file_hash.update(chunk)
         h.update(file_hash.digest())
     return "sha256:" + h.hexdigest()
+
+MAX_ENTRIES = 5000
+MAX_BYTES = 200 * 1024 * 1024
+
+class UnsafeArchive(Exception):
+    """An archive member would write outside the destination, or the archive is too large."""
+
+def _checked_target(name, dest):
+    """Resolve an archive member's path under `dest`, or raise."""
+    if name.startswith("/") or name.startswith("\\") or (len(name) > 1 and name[1] == ":"):
+        raise UnsafeArchive(f"absolute path in archive: {name}")
+    target = os.path.normpath(os.path.join(dest, name))
+    if target != dest and not target.startswith(dest + os.sep):
+        raise UnsafeArchive(f"path escapes the destination: {name}")
+    return target
+
+def _check_budget(count, total):
+    if count > MAX_ENTRIES:
+        raise UnsafeArchive(f"archive has more than {MAX_ENTRIES} entries")
+    if total > MAX_BYTES:
+        raise UnsafeArchive(f"archive unpacks to more than {MAX_BYTES // (1024 * 1024)} MB")
+
+def _extract_tar(path, dest):
+    with tarfile.open(path) as tar:
+        members, count, total = [], 0, 0
+        for m in tar.getmembers():
+            if m.issym() or m.islnk():         # a link can point anywhere; forbid both kinds
+                raise UnsafeArchive(f"archive contains a link: {m.name}")
+            if not (m.isreg() or m.isdir()):
+                raise UnsafeArchive(f"archive contains a special file: {m.name}")
+            _checked_target(m.name, dest)
+            count += 1
+            total += m.size
+            _check_budget(count, total)
+            members.append(m)
+        try:
+            tar.extractall(dest, members=members, filter="data")
+        except TypeError:  # filter= predates Anvil's Python floor on some builds
+            tar.extractall(dest, members=members)
+
+def _extract_zip(path, dest):
+    with zipfile.ZipFile(path) as zf:
+        infos, count, total = [], 0, 0
+        for zi in zf.infolist():
+            mode = zi.external_attr >> 16
+            if mode and stat.S_ISLNK(mode):
+                raise UnsafeArchive(f"archive contains a link: {zi.filename}")
+            _checked_target(zi.filename, dest)
+            count += 1
+            total += zi.file_size
+            _check_budget(count, total)
+            infos.append(zi)
+        zf.extractall(dest, members=infos)
+
+def extract(archive_path, dest):
+    """Unpack `archive_path` into `dest`; every member is validated before anything is written.
+
+    zipfile has no safety filter at all, and tarfile's is not the default on Python 3.12,
+    so neither library's own protection is relied on.
+    """
+    dest = os.path.abspath(dest)
+    if tarfile.is_tarfile(archive_path):
+        _extract_tar(archive_path, dest)
+    elif zipfile.is_zipfile(archive_path):
+        _extract_zip(archive_path, dest)
+    else:
+        raise UnsafeArchive(f"not a tar or zip archive: {archive_path}")
