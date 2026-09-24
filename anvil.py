@@ -276,10 +276,8 @@ def sv2v_convert(sv_path, out_path):
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        print(f"[ERROR] sv2v failed for {sv_path}:")
-        if result.stderr:
-            print(result.stderr.rstrip())
-        sys.exit(1)
+        rel = os.path.relpath(sv_path, os.getcwd())
+        fail(f"sv2v failed on {rel}", (result.stderr or "") + (result.stdout or ""))
 
 def collect_sources(config=None, module_meta=None):
     """
@@ -441,7 +439,7 @@ def build_makefile(config):
 def run(cmd, shell=True, check=True):
     result = subprocess.run(cmd, shell=shell, text=True)
     if check and result.returncode != 0:
-        print("[ERROR] Command failed")
+        print(red("\n✗ command failed"))
         sys.exit(1)
     return result
 
@@ -460,7 +458,7 @@ def yellow(s): return _paint("33", s)
 def red(s):    return _paint("31", s)
 
 # file.ext:line  -- the shape yosys, VPR and gcc all use to point at source.
-_SRC_REF = re.compile(r"([^\s:()'\"]+\.(?:sv|v|xdc|cpp|cc|c|hpp|h|S|ld)):(\d+)")
+_SRC_REF = re.compile(r"([^\s:()'\"]+\.(?:sv|v|xdc|cpp|cc|c|hpp|h|S|ld|hs|tcl)):(\d+)")
 
 def project_refs(line, root):
     """Source references in `line` that point inside the project.
@@ -472,7 +470,7 @@ def project_refs(line, root):
     for m in _SRC_REF.finditer(line):
         path = os.path.expanduser(m.group(1))
         full = os.path.abspath(path if os.path.isabs(path) else os.path.join(root, path))
-        if full == root or full.startswith(root + os.sep):
+        if (full == root or full.startswith(root + os.sep)) and os.path.isfile(full):
             refs.append(f"{os.path.relpath(full, root)}:{m.group(2)}")
     return refs
 
@@ -532,12 +530,21 @@ def diagnostics(lines, root=None):
     empty result. Dropping those loses the explanation.
     """
     seen, out = set(), []
+    cont = 0                      # indented lines continuing the last diagnostic
     for line in lines:
         s = line.strip()
         if not s or s.startswith("make:") or "***" in s:
+            cont = 0
             continue
+        # "        Set ram_addr_bits to 4 ..." and gcc's caret art carry the
+        # actionable half of a message and match no keyword of their own.
+        if cont and line[:1].isspace() and out:
+            out.append(line.rstrip())   # keep the indent: gcc's carets align to it
+            cont -= 1
+            continue
+        cont = 0
         low = s.lower()
-        if not ("warning" in low or "error" in low
+        if not ("warn" in low or "error" in low
                 or re.match(r"^\w*(Error|Exception):", s)):
             continue
         if root:
@@ -547,11 +554,12 @@ def diagnostics(lines, root=None):
         if s not in seen:
             seen.add(s)
             out.append(s)
+            cont = 2
     return out
 
 def is_warning(line):
     low = line.lower()
-    return "warning" in low and "error" not in low
+    return "warn" in low and "error" not in low
 
 def error_lines(lines):
     """Lines that look like the actual failure, newest-last, deduplicated.
@@ -573,6 +581,39 @@ def error_lines(lines):
             seen.add(s)
             out.append(s)
     return out
+
+def note_warnings(output, root=None):
+    """Show a short tool's warnings even when it exits 0.
+
+    programator.py warns that the firmware overflows the RAM depth and then
+    returns success -- silently truncating it. Capturing a step's output must
+    not be what hides that.
+    """
+    root = root or os.getcwd()
+    for line in diagnostics((output or "").splitlines(), root):
+        if is_warning(line):
+            print(yellow(f"  ⚠ {shorten(line, root)}"))
+
+def fail(title, output=None, log_path=None, root=None):
+    """Report a failed stage the same way everywhere, then exit.
+
+    For stages that produce little enough output to keep in memory; the ones
+    that write a log use report() instead. Both print the same shape, so a
+    failure looks the same whichever tool produced it.
+    """
+    root = root or os.getcwd()
+    print(red(f"\n✗ {title}"))
+    if isinstance(output, str):
+        lines = output.splitlines()
+    else:
+        lines = list(output or [])
+    shown = diagnostics(lines, root) or [l for l in lines if l.strip()][-10:]
+    for d in shown[:12]:
+        d = shorten(d, root)
+        print(yellow(f"    {d}") if is_warning(d) else red(f"    {d}"))
+    if log_path:
+        print(f"  full log: {os.path.relpath(log_path, root)}")
+    sys.exit(1)
 
 def run_logged(cmd, log_path, verbose=False, on_line=None):
     """Run `cmd`, tee every line to `log_path`, and return (rc, lines).
@@ -1052,17 +1093,24 @@ def cmd_compile(args):
     if not report(rc, lines, log_path, root, what="Firmware compilation"):
         sys.exit(1)
 
-    subprocess.run([cpu["objcopy"], "-O", "verilog", elf_out, mem_out], check=True)
+    r = subprocess.run([cpu["objcopy"], "-O", "verilog", elf_out, mem_out],
+                       text=True, capture_output=True)
+    if r.returncode != 0:
+        fail("objcopy failed", (r.stderr or "") + (r.stdout or ""))
+    note_warnings((r.stderr or "") + (r.stdout or ""))
 
     ram_addr_bits = params.get("ram_addr_bits", 11)
     depth = 1 << ram_addr_bits
-    subprocess.run([
+    r = subprocess.run([
         "python3", PROGRAMATOR,
         mem_out,
         "--module-name", "ram",
         "--depth", str(depth),
         "-o", ram_out
-    ], check=True)
+    ], text=True, capture_output=True)
+    if r.returncode != 0:
+        fail("ram generation failed", (r.stderr or "") + (r.stdout or ""))
+    note_warnings((r.stderr or "") + (r.stdout or ""))
 
     print(f"[Anvil] Firmware -> {ram_out}")
 
@@ -1163,7 +1211,11 @@ def cmd_program(args):
         int(input("Select: "))
 
     print(f"[Anvil] Programming {ofl_board}...")
-    run(f"sudo {OPENFPGALOADER} -b {ofl_board} {bit}")
+    r = subprocess.run(f"sudo {OPENFPGALOADER} -b {ofl_board} {bit}",
+                       shell=True, text=True, capture_output=True)
+    print(r.stdout, end="")
+    if r.returncode != 0:
+        fail("programming failed", (r.stderr or "") + (r.stdout or ""))
     print(f"[Anvil] Done! UART on /dev/ttyUSB1")
 
 def cmd_test(args):
@@ -1238,14 +1290,12 @@ def cmd_test(args):
         shell=True, text=True, capture_output=True
     )
     if result.returncode != 0:
-        print("[TEST] Compile error:")
-        print(result.stderr)
-        sys.exit(1)
+        fail("testbench compile failed", (result.stderr or "") + (result.stdout or ""))
 
     print(f"[TEST] Running...")
     result = subprocess.run(f"vvp {out}", shell=True, text=True)
     if result.returncode != 0:
-        sys.exit(1)
+        fail("testbench run failed")
 
     if os.path.exists(vcd_file):
         print(f"[TEST] VCD: {vcd_file}")
@@ -1468,9 +1518,9 @@ def usage():
     for name, (_, desc) in COMMANDS.items():
         print(f"  {name:<14} {desc}")
     print()
-    print("  compile/synth/build/rebuild report only warnings and errors from your")
-    print("  own files; the full tool output is kept in build/. Pass --verbose (-v)")
-    print("  to stream it instead.")
+    print("  While a build succeeds you see only warnings from your own files. When a")
+    print("  stage fails you see everything that stage flagged, error or warning. The")
+    print("  full tool output always goes to build/; --verbose (-v) streams it live.")
 
 def main():
     args = sys.argv[1:]

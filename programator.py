@@ -206,8 +206,12 @@ def main():
     else:
         depth = args.depth
         if len(words) > depth:
-            print(f"[WARN] Firmware ({len(words)} words) exceeds depth ({depth})", file=sys.stderr)
-            words = words[:depth]
+            need = (len(words) - 1).bit_length()
+            print(f"[ERROR] Firmware is {len(words)} words but the RAM holds only {depth}"
+                  f" ({len(data)} bytes vs {depth * word_bytes})", file=sys.stderr)
+            print(f"        Set ram_addr_bits to {need} in config.json"
+                  f" ({1 << need} words), or make the firmware smaller.", file=sys.stderr)
+            sys.exit(1)
 
     if args.info:
         print(f"Input:    {args.input}")
