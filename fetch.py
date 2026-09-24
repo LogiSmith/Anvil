@@ -4,8 +4,11 @@ import ast
 import hashlib
 import operator
 import os
+import re
 import stat
 import tarfile
+import urllib.error
+import urllib.request
 import zipfile
 
 MAX_SHIFT = 64   # a shift past this is a memory bomb, not a build parameter
@@ -149,3 +152,101 @@ def extract(archive_path, dest):
         _extract_zip(archive_path, dest)
     else:
         raise UnsafeArchive(f"not a tar or zip archive: {archive_path}")
+
+ARCHIVE_EXTS  = (".tar.gz", ".zip", ".tgz", ".tar.xz")
+ARCHIVE_TYPES = ("application/gzip", "application/x-gzip", "application/zip",
+                 "application/x-tar", "application/x-gtar")
+ARCHIVE_MAGIC = (b"\x1f\x8b", b"PK\x03\x04", b"\xfd7zXZ\x00")
+USER_AGENT    = "anvil"
+
+class NoArchiveFound(Exception):
+    """No candidate URL for a ref turned out to be an archive."""
+
+def classify(ref):
+    """A ref is a local path, a URL, or a bundled module name -- decided before any network call."""
+    if ref.startswith(("./", "../", "/", "~")):
+        return "path"
+    if ref.startswith(("http://", "https://")):
+        return "url"
+    if re.match(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}/", ref):   # host.tld/...
+        return "url"
+    return "name"
+
+def split_ref(ref):
+    """Split `base@ref#subpath`; an `@` after the last `/` is a ref, not URL userinfo."""
+    base, sub = (ref.split("#", 1) + [None])[:2]
+    at = base.rfind("@")
+    slash = base.rfind("/")
+    if at > slash:
+        return base[:at], base[at + 1:], sub
+    return base, None, sub
+
+def archive_candidates(ref):
+    """Every URL to try for `ref`, in order: as given, extension probes, then forge rewrites."""
+    base, at, _ = split_ref(ref)
+    url = base if base.startswith(("http://", "https://")) else "https://" + base
+
+    out = []
+    def add(u):
+        if u not in out:
+            out.append(u)
+
+    if at is None:
+        add(url)
+        if not url.endswith(ARCHIVE_EXTS):
+            for ext in ARCHIVE_EXTS:
+                add(url + ext)
+
+    m = re.match(r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?"
+                 r"(?:/releases/tag/(.+))?/?$", url)
+    if m:
+        owner, repo, tag = m.group(1), m.group(2), m.group(3) or at
+        if tag:
+            add(f"https://github.com/{owner}/{repo}/archive/refs/tags/{tag}.tar.gz")
+            add(f"https://github.com/{owner}/{repo}/archive/refs/heads/{tag}.tar.gz")
+            add(f"https://github.com/{owner}/{repo}/archive/{tag}.tar.gz")
+
+    m = re.match(r"^https?://gitlab\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url)
+    if m and at:
+        owner, repo = m.group(1), m.group(2)
+        add(f"https://gitlab.com/{owner}/{repo}/-/archive/{at}/{repo}-{at}.tar.gz")
+
+    return out
+
+def _looks_like_archive(url, ctype, head):
+    """Content-Type picks the candidate; the first bytes confirm it either way."""
+    if head.startswith(ARCHIVE_MAGIC):
+        return True
+    if ctype.split(";")[0].strip().lower() in ARCHIVE_TYPES:
+        return True
+    return url.endswith(ARCHIVE_EXTS)
+
+def download_archive(ref, dest_dir):
+    """Fetch the first real archive among `archive_candidates(ref)`. Returns (path, resolved_url)."""
+    os.makedirs(dest_dir, exist_ok=True)
+    tried = []
+    for url in archive_candidates(ref):
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                head = r.read(6)
+                ctype = r.headers.get("Content-Type", "")
+                if not _looks_like_archive(url, ctype, head):
+                    tried.append(f"{url} -> {ctype or 'unknown type'}, not an archive")
+                    continue
+                out = os.path.join(dest_dir, "archive")
+                with open(out, "wb") as f:
+                    f.write(head)
+                    while True:
+                        chunk = r.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                return out, url  # resolved, not the shorthand: it's the only part a user can judge
+        except urllib.error.HTTPError as e:
+            tried.append(f"{url} -> HTTP {e.code}")
+            e.close()
+        except urllib.error.URLError as e:
+            tried.append(f"{url} -> {e.reason}")
+    raise NoArchiveFound("no archive found for " + ref + "\n    tried:\n      "
+                          + "\n      ".join(tried))

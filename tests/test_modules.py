@@ -1,5 +1,5 @@
-import contextlib, io, os
-import shutil, sys, tarfile, tempfile, unittest, zipfile
+import contextlib, functools, http.server, io, os
+import shutil, socketserver, sys, tarfile, tempfile, threading, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fetch                                                    # noqa: E402
@@ -11,6 +11,19 @@ def capture():
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         yield buf
+
+@contextlib.contextmanager
+def serve(directory):
+    """A throwaway HTTP server over `directory`, yielding its base URL."""
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler,
+                                directory=directory)
+    srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 class TempCase(unittest.TestCase):
     """A TestCase with a scratch directory and a restored working directory."""
@@ -280,6 +293,150 @@ class TestExtract(TempCase):
         with self.assertRaises(fetch.UnsafeArchive):
             fetch.extract(p, dest)
         self.assertFalse(os.path.exists(os.path.join(outside, "evil.txt")))
+
+
+class TestClassify(unittest.TestCase):
+    def test_bundled_name(self):
+        self.assertEqual(fetch.classify("uart"), "name")
+
+    def test_bundled_name_with_version_is_not_mistaken_for_a_url(self):
+        self.assertEqual(fetch.classify("uart@1.0.0"), "name")
+
+    def test_local_paths(self):
+        self.assertEqual(fetch.classify("../moj-modul"), "path")
+        self.assertEqual(fetch.classify("./m"), "path")
+        self.assertEqual(fetch.classify("/home/ana/rtl/fifo"), "path")
+
+    def test_forge_shorthand_is_a_url(self):
+        self.assertEqual(fetch.classify("github.com/ana/fifo@v1.2.0"), "url")
+
+    def test_monorepo_shorthand_with_subpath_is_a_url(self):
+        self.assertEqual(fetch.classify("github.com/ana/rtl@v1#modules/fifo"), "url")
+
+    def test_direct_archive_url(self):
+        self.assertEqual(fetch.classify("https://x.si/f.tar.gz"), "url")
+
+
+class TestSplitRef(unittest.TestCase):
+    def test_ref_and_subpath(self):
+        self.assertEqual(
+            fetch.split_ref("github.com/ana/rtl@v1.2.0#modules/fifo"),
+            ("github.com/ana/rtl", "v1.2.0", "modules/fifo"),
+        )
+
+    def test_plain_url_has_no_ref_or_subpath(self):
+        self.assertEqual(fetch.split_ref("https://x.si/f.tar.gz"),
+                          ("https://x.si/f.tar.gz", None, None))
+
+    def test_ref_without_subpath(self):
+        self.assertEqual(fetch.split_ref("github.com/ana/fifo@v1"),
+                          ("github.com/ana/fifo", "v1", None))
+
+    def test_subpath_with_nested_slashes(self):
+        self.assertEqual(
+            fetch.split_ref("github.com/ana/rtl@v1#a/b/c"),
+            ("github.com/ana/rtl", "v1", "a/b/c"),
+        )
+
+    def test_url_with_port_has_no_ref(self):
+        self.assertEqual(fetch.split_ref("https://x.si:8443/f.tar.gz"),
+                          ("https://x.si:8443/f.tar.gz", None, None))
+
+
+class TestArchiveCandidates(unittest.TestCase):
+    def test_probes_extensions(self):
+        c = fetch.archive_candidates("https://x.si/rtl/v1")
+        self.assertEqual(c[0], "https://x.si/rtl/v1")
+        self.assertIn("https://x.si/rtl/v1.tar.gz", c)
+        self.assertIn("https://x.si/rtl/v1.zip", c)
+
+    def test_rewrites_github_release_page(self):
+        c = fetch.archive_candidates("https://github.com/LogiSmith/Anvil/releases/tag/1.1.5")
+        self.assertIn("https://github.com/LogiSmith/Anvil/archive/refs/tags/1.1.5.tar.gz", c)
+
+    def test_rewrites_github_at_ref(self):
+        c = fetch.archive_candidates("github.com/ana/fifo@v1.2.0")
+        self.assertIn("https://github.com/ana/fifo/archive/refs/tags/v1.2.0.tar.gz", c)
+
+    def test_rewrites_gitlab_at_ref(self):
+        c = fetch.archive_candidates("gitlab.com/ana/fifo@v1.2.0")
+        self.assertIn("https://gitlab.com/ana/fifo/-/archive/v1.2.0/fifo-v1.2.0.tar.gz", c)
+
+
+class TestLooksLikeArchive(unittest.TestCase):
+    def test_trusts_gzip_magic_over_a_wrong_content_type(self):
+        self.assertTrue(fetch._looks_like_archive(
+            "https://x.si/m", "application/octet-stream", b"\x1f\x8b\x08\x00\x00\x00"))
+
+    def test_trusts_xz_magic_bytes(self):
+        self.assertTrue(fetch._looks_like_archive(
+            "https://x.si/m", "application/octet-stream", b"\xfd7zXZ\x00"))
+
+    def test_rejects_html_mislabeled_as_octet_stream(self):
+        self.assertFalse(fetch._looks_like_archive(
+            "https://x.si/m", "application/octet-stream", b"<html>"))
+
+    def test_content_type_alone_is_enough(self):
+        self.assertTrue(fetch._looks_like_archive("https://x.si/m", "application/zip", b"???\x00"))
+
+
+class TestDownloadArchive(TempCase):
+    def test_downloads_from_a_local_server(self):
+        archive = os.path.join(self.tmp, "m.tar.gz")
+        with tarfile.open(archive, "w:gz") as t:
+            data = b'{"name":"m","version":"1.0.0"}'
+            info = tarfile.TarInfo("m/module.json")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        with serve(self.tmp) as base_url:
+            got, resolved = fetch.download_archive(f"{base_url}/m.tar.gz",
+                                                     os.path.join(self.tmp, "dl"))
+            self.assertTrue(os.path.isfile(got))
+            self.assertEqual(resolved, f"{base_url}/m.tar.gz")
+
+    def test_probes_extensions_before_succeeding(self):
+        archive = os.path.join(self.tmp, "mod.tar.gz")
+        with tarfile.open(archive, "w:gz") as t:
+            data = b"x"
+            info = tarfile.TarInfo("m/top.v")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        with serve(self.tmp) as base_url:
+            got, resolved = fetch.download_archive(f"{base_url}/mod",
+                                                     os.path.join(self.tmp, "dl"))
+            self.assertTrue(os.path.isfile(got))
+            self.assertEqual(resolved, f"{base_url}/mod.tar.gz")
+
+    def test_accepts_a_tarball_the_server_mislabels(self):
+        # extension-less file: SimpleHTTPRequestHandler serves it as octet-stream
+        archive = os.path.join(self.tmp, "blob")
+        with tarfile.open(archive, "w:gz") as t:
+            data = b"x"
+            info = tarfile.TarInfo("m/top.v")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        with serve(self.tmp) as base_url:
+            got, resolved = fetch.download_archive(f"{base_url}/blob",
+                                                     os.path.join(self.tmp, "dl"))
+            self.assertTrue(os.path.isfile(got))
+            self.assertEqual(resolved, f"{base_url}/blob")
+
+    def test_rejects_an_html_page_served_as_octet_stream(self):
+        with open(os.path.join(self.tmp, "ghost"), "w") as f:
+            f.write("<html><body>not found</body></html>")
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.NoArchiveFound) as ctx:
+                fetch.download_archive(f"{base_url}/ghost", os.path.join(self.tmp, "dl"))
+            self.assertIn("not an archive", str(ctx.exception))
+
+    def test_reports_everything_it_tried(self):
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.NoArchiveFound) as ctx:
+                fetch.download_archive(f"{base_url}/ghost", os.path.join(self.tmp, "dl"))
+            msg = str(ctx.exception)
+            self.assertIn("/ghost", msg)
+            self.assertIn(".tar.gz", msg)
+            self.assertIn(".zip", msg)
 
 
 if __name__ == "__main__":
