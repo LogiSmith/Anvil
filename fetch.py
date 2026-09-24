@@ -223,11 +223,12 @@ def _looks_like_archive(url, ctype, head):
     return url.endswith(ARCHIVE_EXTS)
 
 def _content_length(headers):
-    """The advertised body size, or None if absent or not a plain integer."""
+    """The advertised body size, or None if absent, not a plain integer, or negative."""
     try:
-        return int(headers.get("Content-Length"))
+        n = int(headers.get("Content-Length"))
     except (TypeError, ValueError):
         return None
+    return n if n >= 0 else None
 
 def download_archive(ref, dest_dir):
     """Fetch the first real archive among `archive_candidates(ref)`. Returns (path, resolved_url)."""
@@ -240,7 +241,9 @@ def download_archive(ref, dest_dir):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 ctype = r.headers.get("Content-Type", "")
-                length = _content_length(r.headers)
+                # a stray Content-Length alongside chunked framing is out of spec but real;
+                # http.client already discards it (HTTPResponse.length is None when chunked)
+                length = None if getattr(r, "chunked", False) else _content_length(r.headers)
                 head = r.read(6)
                 if not _looks_like_archive(url, ctype, head):
                     tried.append(f"{url} -> {ctype or 'unknown type'}, not an archive")

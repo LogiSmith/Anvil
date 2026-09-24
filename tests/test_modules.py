@@ -513,5 +513,60 @@ class TestDownloadArchiveTruncatedBody(TempCase):
             srv.server_close()
 
 
+class TestContentLength(unittest.TestCase):
+    def test_absent_header_is_none(self):
+        self.assertIsNone(fetch._content_length({}))
+
+    def test_non_numeric_header_is_none(self):
+        self.assertIsNone(fetch._content_length({"Content-Length": "abc"}))
+
+    def test_negative_header_is_none(self):
+        self.assertIsNone(fetch._content_length({"Content-Length": "-5"}))
+
+    def test_valid_header_is_parsed(self):
+        self.assertEqual(fetch._content_length({"Content-Length": "42"}), 42)
+
+
+class _ChunkedHandler(socketserver.BaseRequestHandler):
+    """Chunked framing plus a stray, wrong Content-Length -- chunked framing must win."""
+    payload = b""  # set by the test before the server starts
+
+    def handle(self):
+        self.request.recv(4096)
+        body = self.payload
+        mid = len(body) // 2
+        chunked = b"".join(f"{len(part):x}\r\n".encode() + part + b"\r\n"
+                            for part in (body[:mid], body[mid:]) if part)
+        chunked += b"0\r\n\r\n"
+        header = (b"HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\n"
+                  b"Content-Length: 1114\r\nTransfer-Encoding: chunked\r\n\r\n")
+        self.request.sendall(header + chunked)
+        self.request.close()
+
+
+class TestDownloadArchiveChunkedWithStrayContentLength(TempCase):
+    def test_chunked_body_succeeds_despite_a_stray_content_length(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as t:
+            data = b"x"
+            info = tarfile.TarInfo("m/top.v")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        payload = buf.getvalue()
+        _ChunkedHandler.payload = payload
+        srv = socketserver.TCPServer(("127.0.0.1", 0), _ChunkedHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base_url = f"http://127.0.0.1:{srv.server_address[1]}"
+            dest = os.path.join(self.tmp, "dl")
+            got, resolved = fetch.download_archive(f"{base_url}/m.tar.gz", dest)
+            with open(got, "rb") as f:
+                self.assertEqual(f.read(), payload)
+            self.assertEqual(resolved, f"{base_url}/m.tar.gz")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()
