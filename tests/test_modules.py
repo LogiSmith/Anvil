@@ -487,5 +487,31 @@ class TestDownloadArchivePermissions(TempCase):
             os.chmod(dest, 0o700)
 
 
+class _ShortBodyHandler(socketserver.BaseRequestHandler):
+    """Claims a Content-Length it never delivers, then closes cleanly -- no reset, no exception."""
+    def handle(self):
+        self.request.recv(4096)
+        head = (b"HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\n"
+                b"Content-Length: 1000000\r\n\r\n")
+        self.request.sendall(head + b"\x1f\x8b\x08\x00\x00\x00")
+        self.request.close()
+
+
+class TestDownloadArchiveTruncatedBody(TempCase):
+    def test_short_body_is_a_failed_candidate_not_a_success(self):
+        srv = socketserver.TCPServer(("127.0.0.1", 0), _ShortBodyHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base_url = f"http://127.0.0.1:{srv.server_address[1]}"
+            dest = os.path.join(self.tmp, "dl")
+            with self.assertRaises(fetch.NoArchiveFound) as ctx:
+                fetch.download_archive(f"{base_url}/m.tar.gz", dest)
+            self.assertIn(base_url, str(ctx.exception))
+            self.assertFalse(os.path.exists(os.path.join(dest, "archive")))
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

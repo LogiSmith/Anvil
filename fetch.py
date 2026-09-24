@@ -222,6 +222,13 @@ def _looks_like_archive(url, ctype, head):
         return True
     return url.endswith(ARCHIVE_EXTS)
 
+def _content_length(headers):
+    """The advertised body size, or None if absent or not a plain integer."""
+    try:
+        return int(headers.get("Content-Length"))
+    except (TypeError, ValueError):
+        return None
+
 def download_archive(ref, dest_dir):
     """Fetch the first real archive among `archive_candidates(ref)`. Returns (path, resolved_url)."""
     os.makedirs(dest_dir, exist_ok=True)
@@ -233,10 +240,12 @@ def download_archive(ref, dest_dir):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 ctype = r.headers.get("Content-Type", "")
+                length = _content_length(r.headers)
                 head = r.read(6)
                 if not _looks_like_archive(url, ctype, head):
                     tried.append(f"{url} -> {ctype or 'unknown type'}, not an archive")
                     continue
+                written = len(head)
                 with open(tmp, "wb") as f:
                     f.write(head)
                     while True:
@@ -244,6 +253,11 @@ def download_archive(ref, dest_dir):
                         if not chunk:
                             break
                         f.write(chunk)
+                        written += len(chunk)
+                # a clean close short of Content-Length raises nothing -- count it ourselves
+                if length is not None and written != length:
+                    tried.append(f"{url} -> got {written} of {length} bytes, connection closed early")
+                    continue
                 os.replace(tmp, out)  # atomic: a reader sees a complete archive or none
                 return out, url  # resolved, not the shorthand: it's the only part a user can judge
         # what a failed candidate looks like -- a local filesystem error is fatal, not this
