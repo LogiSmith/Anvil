@@ -466,5 +466,26 @@ class TestDownloadArchiveDroppedConnection(TempCase):
             srv.server_close()
 
 
+class TestDownloadArchivePermissions(TempCase):
+    @unittest.skipIf(os.geteuid() == 0, "root ignores file mode bits")
+    def test_unwritable_dest_dir_is_fatal_not_a_failed_candidate(self):
+        archive = os.path.join(self.tmp, "m.tar.gz")
+        with tarfile.open(archive, "w:gz") as t:
+            data = b"x"
+            info = tarfile.TarInfo("m/top.v")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        dest = os.path.join(self.tmp, "dl")
+        os.makedirs(dest)
+        os.chmod(dest, 0o500)
+        try:
+            with serve(self.tmp) as base_url:
+                with self.assertRaises(OSError) as ctx:
+                    fetch.download_archive(f"{base_url}/m.tar.gz", dest)
+                self.assertIsInstance(ctx.exception, PermissionError)
+        finally:
+            os.chmod(dest, 0o700)
+
+
 if __name__ == "__main__":
     unittest.main()

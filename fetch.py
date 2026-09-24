@@ -2,6 +2,7 @@
 
 import ast
 import hashlib
+import http.client
 import operator
 import os
 import re
@@ -245,8 +246,9 @@ def download_archive(ref, dest_dir):
                         f.write(chunk)
                 os.replace(tmp, out)  # atomic: a reader sees a complete archive or none
                 return out, url  # resolved, not the shorthand: it's the only part a user can judge
-        # OSError also catches ConnectionResetError etc.; HTTPError/URLError derive from it too
-        except OSError as e:
+        # what a failed candidate looks like -- a local filesystem error is fatal, not this
+        except (urllib.error.HTTPError, urllib.error.URLError,
+                ConnectionError, TimeoutError, http.client.HTTPException) as e:
             if isinstance(e, urllib.error.HTTPError):
                 tried.append(f"{url} -> HTTP {e.code}")
                 e.close()
