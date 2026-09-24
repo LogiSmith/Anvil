@@ -1,7 +1,9 @@
 """Module sourcing for Anvil: expression evaluation, archives, hashing."""
 
 import ast
+import hashlib
 import operator
+import os
 
 MAX_SHIFT = 64   # a shift past this is a memory bomb, not a build parameter
 MAX_NODES = 200  # bounds recursion before it happens -- the interpreter's own limit varies
@@ -50,3 +52,29 @@ def eval_arith(expr, names):
         raise ValueError(f"{type(node).__name__} is not allowed in an expression")
 
     return walk(tree)
+
+HASHED_SUFFIXES = (".v", ".sv")
+HASHED_NAMES = ("module.json", "soc.json")
+SKIP_DIRS = {"build", ".git", "__pycache__"}
+
+def hashed_files(mod_dir):
+    # Paths Anvil actually reads, relative to `mod_dir`, sorted.
+    found = []
+    for root, dirs, names in os.walk(mod_dir):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        for n in names:
+            if n.endswith(HASHED_SUFFIXES) or n in HASHED_NAMES:
+                rel = os.path.relpath(os.path.join(root, n), mod_dir)
+                found.append(rel.replace(os.sep, "/"))
+    return sorted(found)
+
+def module_hash(mod_dir):
+    # SHA-256 over the module's source, independent of where it sits.
+    h = hashlib.sha256()
+    for rel in hashed_files(mod_dir):
+        h.update(rel.encode("utf-8") + b"\0")
+        with open(os.path.join(mod_dir, rel), "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        h.update(b"\0")
+    return "sha256:" + h.hexdigest()

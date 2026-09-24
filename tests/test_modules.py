@@ -92,5 +92,56 @@ class TestEvalDefsyms(TempCase):
         self.assertIn("too large", text)
 
 
+def _make_module(tmp_path, rtl="assign x = 1;\n", extra=None):
+    d = os.path.join(tmp_path, "m")
+    os.makedirs(os.path.join(d, "sub"), exist_ok=True)
+    with open(os.path.join(d, "module.json"), "w") as f:
+        f.write('{"name":"m","version":"1.0.0"}')
+    with open(os.path.join(d, "top.v"), "w") as f:
+        f.write(rtl)
+    with open(os.path.join(d, "sub", "helper.sv"), "w") as f:
+        f.write("module helper; endmodule\n")
+    for name, body in (extra or {}).items():
+        p = os.path.join(d, name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write(body)
+    return d
+
+
+class TestModuleHash(TempCase):
+    def test_hash_is_stable(self):
+        d = _make_module(self.tmp)
+        self.assertEqual(fetch.module_hash(d), fetch.module_hash(d))
+        self.assertTrue(fetch.module_hash(d).startswith("sha256:"))
+
+    def test_hash_ignores_files_anvil_does_not_read(self):
+        d = _make_module(self.tmp)
+        before = fetch.module_hash(d)
+        for junk in ["README.md", "notes.log", "sim.vcd", "build/top.bit", ".git/HEAD"]:
+            p = os.path.join(d, junk)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as f:
+                f.write("noise")
+        self.assertEqual(fetch.module_hash(d), before)
+
+    def test_hash_changes_when_rtl_changes(self):
+        a = _make_module(os.path.join(self.tmp, "a"))
+        b = _make_module(os.path.join(self.tmp, "b"), rtl="assign x = 0;\n")
+        self.assertNotEqual(fetch.module_hash(a), fetch.module_hash(b))
+
+    def test_hash_changes_when_module_json_changes(self):
+        d = _make_module(self.tmp)
+        before = fetch.module_hash(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write('{"name":"m","version":"2.0.0"}')
+        self.assertNotEqual(fetch.module_hash(d), before)
+
+    def test_hash_independent_of_location(self):
+        a = _make_module(os.path.join(self.tmp, "one"))
+        b = _make_module(os.path.join(self.tmp, "two"))
+        self.assertEqual(fetch.module_hash(a), fetch.module_hash(b))
+
+
 if __name__ == "__main__":
     unittest.main()
