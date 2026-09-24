@@ -1,5 +1,5 @@
-import contextlib, functools, http.server, io, os
-import shutil, socketserver, sys, tarfile, tempfile, threading, unittest, zipfile
+import contextlib, functools, http.server, io, os, socket
+import shutil, socketserver, struct, sys, tarfile, tempfile, threading, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fetch                                                    # noqa: E402
@@ -437,6 +437,33 @@ class TestDownloadArchive(TempCase):
             self.assertIn("/ghost", msg)
             self.assertIn(".tar.gz", msg)
             self.assertIn(".zip", msg)
+
+
+class _TruncatingHandler(socketserver.BaseRequestHandler):
+    """Claims a Content-Length it never delivers, then forces a TCP reset on close."""
+    def handle(self):
+        self.request.recv(4096)
+        head = (b"HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\n"
+                b"Content-Length: 1000000\r\n\r\n")
+        self.request.sendall(head + b"\x1f\x8b\x08\x00\x00\x00")
+        self.request.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        self.request.close()
+
+
+class TestDownloadArchiveDroppedConnection(TempCase):
+    def test_dropped_connection_is_a_failed_candidate_not_a_crash(self):
+        srv = socketserver.TCPServer(("127.0.0.1", 0), _TruncatingHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base_url = f"http://127.0.0.1:{srv.server_address[1]}"
+            dest = os.path.join(self.tmp, "dl")
+            with self.assertRaises(fetch.NoArchiveFound) as ctx:
+                fetch.download_archive(f"{base_url}/m.tar.gz", dest)
+            self.assertIn(base_url, str(ctx.exception))
+            self.assertFalse(os.path.exists(os.path.join(dest, "archive")))
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 if __name__ == "__main__":

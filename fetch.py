@@ -224,29 +224,38 @@ def _looks_like_archive(url, ctype, head):
 def download_archive(ref, dest_dir):
     """Fetch the first real archive among `archive_candidates(ref)`. Returns (path, resolved_url)."""
     os.makedirs(dest_dir, exist_ok=True)
+    out = os.path.join(dest_dir, "archive")
+    tmp = out + ".part"
     tried = []
     for url in archive_candidates(ref):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
-                head = r.read(6)
                 ctype = r.headers.get("Content-Type", "")
+                head = r.read(6)
                 if not _looks_like_archive(url, ctype, head):
                     tried.append(f"{url} -> {ctype or 'unknown type'}, not an archive")
                     continue
-                out = os.path.join(dest_dir, "archive")
-                with open(out, "wb") as f:
+                with open(tmp, "wb") as f:
                     f.write(head)
                     while True:
                         chunk = r.read(65536)
                         if not chunk:
                             break
                         f.write(chunk)
+                os.replace(tmp, out)  # atomic: a reader sees a complete archive or none
                 return out, url  # resolved, not the shorthand: it's the only part a user can judge
-        except urllib.error.HTTPError as e:
-            tried.append(f"{url} -> HTTP {e.code}")
-            e.close()
-        except urllib.error.URLError as e:
-            tried.append(f"{url} -> {e.reason}")
+        # OSError also catches ConnectionResetError etc.; HTTPError/URLError derive from it too
+        except OSError as e:
+            if isinstance(e, urllib.error.HTTPError):
+                tried.append(f"{url} -> HTTP {e.code}")
+                e.close()
+            elif isinstance(e, urllib.error.URLError):
+                tried.append(f"{url} -> {e.reason}")
+            else:
+                tried.append(f"{url} -> {e}")
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     raise NoArchiveFound("no archive found for " + ref + "\n    tried:\n      "
                           + "\n      ".join(tried))
