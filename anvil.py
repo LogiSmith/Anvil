@@ -476,8 +476,7 @@ def project_refs(line, root):
             refs.append(f"{os.path.relpath(full, root)}:{m.group(2)}")
     return refs
 
-_FILE_TOKEN = re.compile(r"[^\s'\",]+\.(?:sv|v|xdc|sdc|pcf|cpp|cc|c|S)\b")
-
+_FILE_TOKEN  = re.compile(r"[^\s'\",]+\.(?:sv|v|xdc|sdc|pcf|cpp|cc|c|S)\b")
 def command_files(cmdline, root):
     """Project files named on a stage's command line.
 
@@ -523,6 +522,37 @@ def own_warnings(lines, root):
             out.append(s)
     return out
 
+def diagnostics(lines, root=None):
+    """Everything the tools themselves flagged, in the order they said it.
+
+    No filtering by file and no per-error knowledge: whatever a tool called a
+    warning or an error is shown. On a failure the cause is almost always a
+    warning emitted just before the fatal line -- yosys' `get_ports`, for one,
+    only warns that a port is missing and then lets the next command die on the
+    empty result. Dropping those loses the explanation.
+    """
+    seen, out = set(), []
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("make:") or "***" in s:
+            continue
+        low = s.lower()
+        if not ("warning" in low or "error" in low
+                or re.match(r"^\w*(Error|Exception):", s)):
+            continue
+        if root:
+            refs = _SRC_REF.findall(s)
+            if refs and not project_refs(s, root):
+                continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+def is_warning(line):
+    low = line.lower()
+    return "warning" in low and "error" not in low
+
 def error_lines(lines):
     """Lines that look like the actual failure, newest-last, deduplicated.
 
@@ -543,32 +573,6 @@ def error_lines(lines):
             seen.add(s)
             out.append(s)
     return out
-
-# Known failure signatures -> a short note on what the toolchain could not do,
-# plus the file worth opening. These are HINTS, not diagnoses: the same symptom
-# can have several causes, so the raw error is always printed alongside. Add a
-# row whenever a new failure is understood well enough to name a file.
-FAILURE_HINTS = [
-    (("create_ioplace", "empty sequence"),
-     "no pin constraints came out of the XDC",
-     "check {xdc}: each port needs a PACKAGE_PIN line, and the port names "
-     "there must match the ones in the design"),
-    (("Unsupported board type",),
-     "the Makefile's TARGET is not in boards.json",
-     "check \"target\" in config.json, then re-run -- `anvil boards` lists the valid ones"),
-    (("set_property",),
-     "a constraint in the XDC could not be applied",
-     "either that line's syntax is off, or it names a port the design does not "
-     "have -- compare the port list of your top module against {xdc}"),
-]
-
-def failure_hint(lines, config=None):
-    blob = "\n".join(lines)
-    for needles, what, fix in FAILURE_HINTS:
-        if all(n in blob for n in needles):
-            xdc = (config or {}).get("xdc", "the project XDC")
-            return what, fix.format(xdc=xdc)
-    return None, None
 
 def run_logged(cmd, log_path, verbose=False, on_line=None):
     """Run `cmd`, tee every line to `log_path`, and return (rc, lines).
@@ -595,37 +599,36 @@ def run_logged(cmd, log_path, verbose=False, on_line=None):
     return proc.wait(), lines
 
 def report(rc, lines, log_path, root, stage=None, config=None, what="Build",
-           stage_cmd=None):
+           stage_cmd=None, since=0):
     """Print the warning/error summary. Returns True when the run succeeded."""
-    # A symbol, not the word: the tool's own line already says "warning:".
-    for w in own_warnings(lines, root):
-        print(yellow(f"  ⚠ {w}"))
-
     if rc == 0:
+        # A symbol, not the word: the tool's line already says "warning:".
+        for w in own_warnings(lines, root):
+            print(yellow(f"  ⚠ {w}"))
         return True
 
     label = f"{stage} failed" if stage else f"{what} failed"
     print(red(f"\n✗ {label}"))
 
-    errs = error_lines(lines)
-    for e in errs[-6:]:
-        print(red(f"    {shorten(e, root)}"))
-    if not errs:                      # nothing matched -- never hide the failure
+    # Everything the failing stage flagged -- warnings included, since the
+    # fatal line is often just the consequence of one of them.
+    diag = diagnostics(lines[since:] if since else lines, root)
+    for d in diag[:12]:
+        d = shorten(d, root)
+        print(yellow(f"    {d}") if is_warning(d) else red(f"    {d}"))
+    if len(diag) > 12:
+        print(f"    ... {len(diag) - 12} more in the log")
+    if not diag:                      # nothing flagged -- never hide the failure
         for line in [l for l in lines if l.strip()][-15:]:
             print(f"    {shorten(line, root)}")
 
-    # Name the files even when the cause is unclear -- the tool often reports
-    # a symptom without saying which input produced it.
+    # The tools name no file, so report the stage's actual inputs rather than
+    # inferring a culprit from the message text.
     files = command_files(stage_cmd, root)
     if files:
         print("  files this stage was given:")
         for f in files:
             print(f"    {f}")
-
-    what_, fix = failure_hint(lines, config)
-    if what_:
-        print(yellow(f"  possible cause: {what_}"))
-        print(yellow(f"    {fix}"))
 
     print(f"  full log: {os.path.relpath(log_path, root)}")
     return False
@@ -1090,9 +1093,10 @@ def cmd_synth(args):
         "symbiflow_write_fasm":      "fasm",
         "symbiflow_write_bitstream": "bitstream",
     }
-    state = {"stage": None, "cmd": None}
+    state = {"stage": None, "cmd": None, "at": 0, "n": 0}
 
     def watch(line):
+        state["n"] += 1
         for marker, name in stage_of.items():
             if marker in line and state["stage"] != name:
                 if state["stage"]:
@@ -1100,6 +1104,7 @@ def cmd_synth(args):
                 print(f"  {name:<10}", end="", flush=True)
                 state["stage"] = name
                 state["cmd"]   = line     # names this stage's input files
+                state["at"]    = state["n"] - 1
                 break
 
     t0 = time.time()
@@ -1113,7 +1118,7 @@ def cmd_synth(args):
         print(red("failed") if rc != 0 else green("ok"))
 
     if not report(rc, lines, log_path, root, stage=state["stage"],
-                  config=config, stage_cmd=state["cmd"]):
+                  config=config, stage_cmd=state["cmd"], since=state["at"]):
         sys.exit(1)
 
     bit = find_bitstream(target)
