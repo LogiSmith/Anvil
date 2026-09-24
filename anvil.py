@@ -125,6 +125,15 @@ def entry_ref(name, entry):
     """The ref string that resolves `entry` again: its path if local, else name@version."""
     return entry["path"] if is_path_dep(entry["path"]) else f"{name}@{entry['version']}"
 
+def find_by_local_path(current, base, arg):
+    """The module in `current` whose path/source normalizes to `arg`, or None -- survives a deleted directory."""
+    target = os.path.normpath(os.path.join(base, arg))
+    for name, entry in current.items():
+        for val in (entry.get("path"), entry.get("source")):
+            if val and is_path_dep(val) and os.path.normpath(os.path.join(base, val)) == target:
+                return name
+    return None
+
 def migrate_config(cfg):
     """Bring a config up to schema 2.0, returning (config, changed); never fetches -- schema 1 refs are never URLs."""
     if cfg.get("schema") == SCHEMA:
@@ -982,12 +991,19 @@ def cmd_removemodule(args):
 
     config  = load_config()
     current = config.get("modules", {})
+    base    = os.getcwd()
 
     to_remove = set()
     for a in args:
         if is_path_dep(a):
-            meta, _, _ = load_module_meta(a, base_dir=os.getcwd())
-            to_remove.add(meta["name"])
+            match = find_by_local_path(current, base, a)
+            if match is None:
+                try:
+                    meta, _, _ = load_module_meta(a, base_dir=base)
+                except SystemExit:
+                    fail(f"cannot remove '{a}' -- not a module directory and not in this project's modules")
+                match = meta["name"]
+            to_remove.add(match)
         else:
             to_remove.add(parse_module_ref(a)[0])
 

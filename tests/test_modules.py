@@ -690,5 +690,38 @@ class TestModulesSchemaIntegration(TempCase):
         self.assertNotIn(os.path.expanduser("~"), json.dumps(cfg))
 
 
+class TestRemoveLocalModuleByPath(TempCase):
+    """removemodule <path> must work with the ref used to add it, even after the directory is gone."""
+
+    def _scaffold(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        _make_local_module(self.tmp, "gone-mod")
+        os.chdir(proj)
+        with open("config.json", "w") as f:
+            json.dump({"schema": "2.0", "project": "p", "version": "1.0.0",
+                       "board": "Nexys-A7-50T", "target": "nexys_a7_50t",
+                       "xdc": "x.xdc", "modules": {}}, f)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_addmodule(["../gone-mod"])
+        with open("config.json") as f:
+            self.assertIn("gone-mod", json.load(f)["modules"])
+
+    def test_removes_by_path_with_directory_present(self):
+        self._scaffold()
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_removemodule(["../gone-mod"])
+        with open("config.json") as f:
+            self.assertNotIn("gone-mod", json.load(f)["modules"])
+
+    def test_removes_by_path_after_directory_deleted(self):
+        self._scaffold()
+        shutil.rmtree(os.path.join(self.tmp, "gone-mod"))
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_removemodule(["../gone-mod"])
+        with open("config.json") as f:
+            self.assertNotIn("gone-mod", json.load(f)["modules"])
+
+
 if __name__ == "__main__":
     unittest.main()
