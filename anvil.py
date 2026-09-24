@@ -124,8 +124,12 @@ def make_entry(key, mod_dir, meta):
     return module_entry(version, "system", bundled_path(key), fetch.module_hash(mod_dir))
 
 def entry_ref(name, entry):
-    """The ref string that resolves `entry` again: its path if local, else name@version."""
-    return entry["path"] if is_path_dep(entry["path"]) else f"{name}@{entry['version']}"
+    """The ref string that resolves `entry` again: its path if local or fetched, else name@version."""
+    if is_path_dep(entry["path"]):
+        return entry["path"]
+    if entry.get("source") != "system":
+        return "./" + entry["path"]   # external/<name>@<version> -- a path, not a bundled key
+    return f"{name}@{entry['version']}"
 
 def install_external(ref, staging):
     """Download and validate `ref` into a fresh directory under `staging`; nothing is installed yet.
@@ -142,6 +146,65 @@ def install_external(ref, staging):
     root = fetch.find_module_root(unpacked, subpath)
     meta = fetch.validate_module(root)
     return meta["name"], meta, root, resolved
+
+def plan_external(refs, staging, existing):
+    """Fetch every external ref and its dependencies breadth-first; nothing is installed yet."""
+    queue, seen, out = [(r, None) for r in refs], {}, []
+    while queue:
+        ref, required_by = queue.pop(0)
+        name, meta, staged, resolved = install_external(ref, staging)
+        if name in existing and existing[name].get("source") != resolved:
+            fail(f"module '{name}' is already in this project",
+                 f"present:  {existing[name].get('source')}\n"
+                 f"incoming: {resolved}")
+        # two refs in the same request resolving to one name is the same risk, just not against config.json yet
+        if name in seen and seen[name] != resolved:
+            fail(f"module '{name}' resolves to two different sources in this request",
+                 f"first:  {seen[name]}\nsecond: {resolved}")
+        if name in seen:
+            continue
+        seen[name] = resolved
+        out.append({
+            "name": name,
+            "version": meta.get("version", "0.0.0"),
+            "source": resolved,
+            "staged": staged,
+            "required_by": required_by,
+            "has_soc": os.path.isfile(os.path.join(staged, "soc.json")),
+        })
+        for dep in meta.get("depends", []):
+            if fetch.classify(dep) != "name":   # bundled names keep going through resolve_deps
+                queue.append((dep, name))
+    return out
+
+def confirm_external(plan, assume_yes):
+    """Show every module the plan will install, then ask -- silence must never read as yes."""
+    if not plan:
+        return True
+
+    print("\nThese external modules will be added:\n")
+    for m in plan:
+        why = f"   (required by {m['required_by']})" if m["required_by"] else ""
+        print(f"  {m['name']}  {m['version']}{why}")
+        # own line, never truncated: the name is self-declared by the module, the URL is what's judged
+        print(f"      from  {m['source']}")
+        if m["has_soc"]:
+            print(yellow("      ⚠ ships soc.json -- chooses the compiler that runs"))
+        print()
+    print("Names are declared by the modules themselves; "
+          "the URL is what you are trusting.")
+
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print("[ERROR] refusing to install external modules without confirmation")
+        print("        stdin is not a terminal -- pass --yes if this is intended")
+        sys.exit(1)
+    try:
+        answer = input(f"Add these {len(plan)} external modules? [y/N] ")
+    except EOFError:   # e.g. Ctrl-D -- absence of an answer is not a yes
+        answer = ""
+    return answer.strip().lower() == "y"
 
 def find_by_local_path(current, base, arg):
     """The module in `current` whose path/source normalizes to `arg`, or None -- survives a deleted directory."""
@@ -958,7 +1021,10 @@ def cmd_initmodule(args):
     print(f"  When ready: anvil installmodule")
 
 def cmd_addmodule(args):
-    if not args:
+    assume_yes = "--yes" in args
+    force      = "--force" in args
+    refs = [a for a in args if a not in ("--yes", "--force")]
+    if not refs:
         print("[ERROR] Specify module(s): anvil addmodule <name> ...")
         sys.exit(1)
 
@@ -967,13 +1033,62 @@ def cmd_addmodule(args):
     current  = config.get("modules", {})
 
     to_add, added_keys = {}, []
-    for mod in args:
+    bundled_refs, external_refs = [], []
+    for ref in refs:
+        if force and ref in current:
+            entry = current[ref]
+            if fetch.classify(entry.get("source", "")) == "url":
+                # re-hash what's on disk in place -- re-fetching would discard a local hand-edit
+                mod_dir = entry["path"]
+                if not os.path.isfile(os.path.join(mod_dir, "module.json")):
+                    fail(f"module '{ref}' is missing",
+                         f"{mod_dir} does not exist -- run anvil build to re-fetch it first")
+                with open(os.path.join(mod_dir, "module.json")) as f:
+                    meta = json.load(f)
+                version = meta.get("version", entry["version"])
+                to_add[meta["name"]] = module_entry(version, entry["source"], mod_dir,
+                                                      fetch.module_hash(mod_dir))
+                added_keys.append(f"{meta['name']}@{version}")
+                continue
+            ref = entry_ref(ref, entry)   # local/bundled -- re-resolve and recompute the hash
+        (external_refs if fetch.classify(ref) == "url" else bundled_refs).append(ref)
+
+    for mod in bundled_refs:
         chain = resolve_deps(mod, registry, base_dir=os.getcwd())
         for (key, mod_dir, meta) in chain:
             name = meta["name"]
-            if name not in current and name not in to_add:
+            if force or (name not in current and name not in to_add):
                 to_add[name] = make_entry(key, mod_dir, meta)
-                added_keys.append(key)
+                if key not in added_keys:
+                    added_keys.append(key)
+
+    if external_refs:
+        staging = tempfile.mkdtemp()
+        try:
+            plan = plan_external(external_refs, staging, {**current, **to_add})
+            if not confirm_external(plan, assume_yes):
+                print("[Anvil] Aborted -- nothing installed.")
+                return
+            os.makedirs(EXTERNAL_DIR, exist_ok=True)
+            for m in plan:
+                dest = os.path.join(EXTERNAL_DIR, f"{m['name']}@{m['version']}")
+                if os.path.isdir(dest):
+                    shutil.rmtree(dest)
+                shutil.move(m["staged"], dest)
+                to_add[m["name"]] = module_entry(m["version"], m["source"], dest,
+                                                  fetch.module_hash(dest))
+                added_keys.append(f"{m['name']}@{m['version']}")
+                with open(os.path.join(dest, "module.json")) as f:
+                    dep_meta = json.load(f)
+                for dep in dep_meta.get("depends", []):
+                    if fetch.classify(dep) == "name":   # bundled deps of a fetched module
+                        for (key, mod_dir, meta) in resolve_deps(dep, registry, base_dir=os.getcwd()):
+                            name = meta["name"]
+                            if name not in current and name not in to_add:
+                                to_add[name] = make_entry(key, mod_dir, meta)
+                                added_keys.append(key)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     if not to_add:
         print("[Anvil] All requested modules already present.")

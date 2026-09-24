@@ -1011,5 +1011,397 @@ class TestRemoveLocalModuleByPath(TempCase):
             self.assertIn("realmod", json.load(f)["modules"])
 
 
+FIFO_URL = "https://github.com/ana/fifo/archive/refs/tags/v1.2.0.tar.gz"
+AXI_URL  = "https://github.com/bob/axi/archive/refs/tags/v2.0.0.tar.gz"
+
+
+class FakeTTY(io.StringIO):
+    """A readable stream that claims to be a terminal, for simulating an interactive answer."""
+    def isatty(self):
+        return True
+
+
+class StdinCase(unittest.TestCase):
+    """Restores sys.stdin -- tests here replace it to simulate a terminal or a non-tty pipe."""
+    def setUp(self):
+        self._stdin = sys.stdin
+    def tearDown(self):
+        sys.stdin = self._stdin
+
+
+class TestConfirmExternal(StdinCase):
+    def _plan(self, **over):
+        base = {"name": "m", "version": "1", "source": "u",
+                "required_by": None, "has_soc": False}
+        return [{**base, **over}]
+
+    # the four properties that must be impossible to get by accident, first
+
+    def test_non_tty_without_yes_is_an_error(self):
+        sys.stdin = io.StringIO("")   # not a terminal
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.confirm_external(self._plan(), False)
+        self.assertIn("--yes", out.getvalue())
+
+    def test_assume_yes_returns_true_without_asking(self):
+        sys.stdin = io.StringIO("")   # would raise if read
+        with capture():
+            self.assertTrue(anvil.confirm_external(self._plan(), True))
+
+    def test_empty_plan_needs_no_consent(self):
+        self.assertTrue(anvil.confirm_external([], False))
+
+    def test_anything_but_an_explicit_y_is_a_no(self):
+        for answer in ("", "yes", "Yes please", "sure", "n", "  \n"):
+            sys.stdin = FakeTTY(answer)
+            with capture():
+                self.assertFalse(anvil.confirm_external(self._plan(), False), repr(answer))
+
+    def test_uppercase_y_is_accepted(self):
+        sys.stdin = FakeTTY("Y\n")
+        with capture():
+            self.assertTrue(anvil.confirm_external(self._plan(), False))
+
+    # presentation properties the brief calls out as requirements, not choices
+
+    def test_prompt_lists_every_module_and_who_pulled_it(self):
+        plan = [
+            {"name": "fifo", "version": "1.2.0", "source": FIFO_URL,
+             "required_by": None, "has_soc": False},
+            {"name": "axi-lite", "version": "2.0.0", "source": AXI_URL,
+             "required_by": "fifo", "has_soc": True},
+        ]
+        with capture() as out:
+            anvil.confirm_external(plan, assume_yes=True)
+        text = out.getvalue()
+        self.assertIn("fifo", text)
+        self.assertIn("axi-lite", text)
+        self.assertIn("required by fifo", text)
+        self.assertIn("soc.json", text)
+
+    def test_prompt_shows_the_full_resolved_url(self):
+        plan = self._plan(name="uart", version="9.9.9", source=FIFO_URL)
+        with capture() as out:
+            anvil.confirm_external(plan, assume_yes=True)
+        text = out.getvalue()
+        self.assertIn(FIFO_URL, text)
+        self.assertIn("trusting", text)
+
+
+def _mod_meta(name, version="1.0.0", depends=None):
+    meta = {"name": name, "version": version}
+    if depends:
+        meta["depends"] = depends
+    return json.dumps(meta).encode()
+
+
+class TestPlanExternal(TempCase):
+    def _staging(self):
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        return staging
+
+    def test_transitive_dependency_is_fetched_and_flagged(self):
+        with serve(self.tmp) as base_url:
+            axi_url = f"{base_url}/axi.tar.gz"
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.2.0", depends=[axi_url])),
+                ("pkg/top.v", b"module fifo; endmodule"),
+            ], name="fifo.tar.gz")
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("axi-lite", "2.0.0")),
+                ("pkg/top.v", b"module axi; endmodule"),
+                ("pkg/soc.json", b'{"compiler":"gcc","objcopy":"objcopy"}'),
+            ], name="axi.tar.gz")
+            plan = anvil.plan_external([f"{base_url}/fifo.tar.gz"], self._staging(), {})
+        by_name = {m["name"]: m for m in plan}
+        self.assertEqual(set(by_name), {"fifo", "axi-lite"})
+        self.assertIsNone(by_name["fifo"]["required_by"])
+        self.assertEqual(by_name["axi-lite"]["required_by"], "fifo")
+        self.assertTrue(by_name["axi-lite"]["has_soc"])
+        self.assertFalse(by_name["fifo"]["has_soc"])
+        self.assertEqual(by_name["axi-lite"]["source"], axi_url)
+
+    def test_bundled_name_in_depends_is_not_queued(self):
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.0.0", depends=["uart"])),
+                ("pkg/top.v", b"module fifo; endmodule"),
+            ], name="fifo.tar.gz")
+            plan = anvil.plan_external([f"{base_url}/fifo.tar.gz"], self._staging(), {})
+        self.assertEqual([m["name"] for m in plan], ["fifo"])
+
+    def test_collision_with_an_existing_module_fails_naming_both_sources(self):
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("uart", "1.0.0")),
+                ("pkg/top.v", b"module uart; endmodule"),
+            ], name="uart.tar.gz")
+            existing = {"uart": {"source": "system"}}
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.plan_external([f"{base_url}/uart.tar.gz"], self._staging(), existing)
+        text = out.getvalue()
+        self.assertIn("system", text)
+        self.assertIn(f"{base_url}/uart.tar.gz", text)
+
+    def test_collision_within_the_same_batch_fails_naming_both_sources(self):
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("shared", "1.0.0")),
+                ("pkg/top.v", b"module a; endmodule"),
+            ], name="a.tar.gz")
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("shared", "2.0.0")),
+                ("pkg/top.v", b"module b; endmodule"),
+            ], name="b.tar.gz")
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.plan_external(
+                        [f"{base_url}/a.tar.gz", f"{base_url}/b.tar.gz"], self._staging(), {})
+        text = out.getvalue()
+        self.assertIn(f"{base_url}/a.tar.gz", text)
+        self.assertIn(f"{base_url}/b.tar.gz", text)
+
+    def test_cyclic_external_dependency_terminates(self):
+        with serve(self.tmp) as base_url:
+            a_url, b_url = f"{base_url}/a.tar.gz", f"{base_url}/b.tar.gz"
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("a", "1.0.0", depends=[b_url])),
+                ("pkg/top.v", b"module a; endmodule"),
+            ], name="a.tar.gz")
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("b", "1.0.0", depends=[a_url])),
+                ("pkg/top.v", b"module b; endmodule"),
+            ], name="b.tar.gz")
+            plan = anvil.plan_external([a_url], self._staging(), {})
+        self.assertEqual(sorted(m["name"] for m in plan), ["a", "b"])
+
+
+def _scaffold_project(base):
+    proj = os.path.join(base, "proj")
+    os.makedirs(proj)
+    with open(os.path.join(proj, "config.json"), "w") as f:
+        json.dump({"schema": "2.0", "project": "p", "version": "1.0.0",
+                   "board": "Nexys-A7-50T", "target": "nexys_a7_50t",
+                   "xdc": "x.xdc", "modules": {}}, f)
+    return proj
+
+
+class TestCmdAddmoduleExternal(TempCase, StdinCase):
+    """Exercises cmd_addmodule itself, not confirm_external/plan_external in isolation."""
+
+    def setUp(self):
+        TempCase.setUp(self)
+        StdinCase.setUp(self)
+        self._made = []
+        self._real_mkdtemp = anvil.tempfile.mkdtemp
+        def tracking_mkdtemp(*a, **k):
+            d = self._real_mkdtemp(*a, **k)
+            self._made.append(d)
+            return d
+        anvil.tempfile.mkdtemp = tracking_mkdtemp
+
+    def tearDown(self):
+        anvil.tempfile.mkdtemp = self._real_mkdtemp
+        StdinCase.tearDown(self)
+        TempCase.tearDown(self)
+
+    def _serve_fifo(self, name="fifo", version="1.0.0", filename="fifo.tar.gz"):
+        _tar_with(self.tmp, [
+            ("pkg/module.json", _mod_meta(name, version)),
+            ("pkg/top.v", b"module fifo; endmodule"),
+        ], name=filename)
+
+    def test_declining_installs_nothing_and_cleans_staging(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with open("config.json") as f:
+            before = json.load(f)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            sys.stdin = FakeTTY("n\n")
+            with capture():
+                anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        self.assertFalse(os.path.isdir("external"))
+        with open("config.json") as f:
+            self.assertEqual(json.load(f), before)
+        self.assertTrue(self._made)
+        for d in self._made:
+            self.assertFalse(os.path.exists(d))
+
+    def test_accepting_installs_and_records_a_sha256_hash(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            sys.stdin = FakeTTY("y\n")
+            with capture():   # a real failure here (e.g. get_resolved_modules choking on the
+                anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])   # new entry) must fail the test
+        self.assertTrue(os.path.isfile(os.path.join("external", "fifo@1.0.0", "module.json")))
+        with open("config.json") as f:
+            entry = json.load(f)["modules"]["fifo"]
+        self.assertEqual(entry["path"], os.path.join("external", "fifo@1.0.0"))
+        self.assertEqual(entry["source"], f"{base_url}/fifo.tar.gz")
+        self.assertTrue(entry["hash"].startswith("sha256:"))
+        for d in self._made:
+            self.assertFalse(os.path.exists(d))
+
+    def test_yes_flag_skips_the_prompt(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            sys.stdin = io.StringIO("")   # never read
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        with open("config.json") as f:
+            self.assertIn("fifo", json.load(f)["modules"])
+
+    def test_non_tty_without_yes_refuses_and_installs_nothing(self):
+        # the toolchain installer runs anvil with stdin from /dev/null -- this is that case
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with open("config.json") as f:
+            before = json.load(f)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            sys.stdin = io.StringIO("")
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        self.assertIn("--yes", out.getvalue())
+        self.assertFalse(os.path.isdir("external"))
+        with open("config.json") as f:
+            self.assertEqual(json.load(f), before)
+        for d in self._made:
+            self.assertFalse(os.path.exists(d))
+
+    def test_bundled_only_addmodule_never_touches_stdin(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        sys.stdin = io.StringIO("")   # would raise StopIteration if input() were ever called
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_addmodule(["uart"])
+        with open("config.json") as f:
+            self.assertIn("uart", json.load(f)["modules"])
+        self.assertEqual(self._made, [])   # no staging dir at all -- no external ref involved
+
+    def test_name_collision_with_a_bundled_module_names_both_sources(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_addmodule(["uart"])
+        with serve(self.tmp) as base_url:
+            self._serve_fifo(name="uart", filename="uart.tar.gz")
+            sys.stdin = FakeTTY("y\n")
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.cmd_addmodule([f"{base_url}/uart.tar.gz"])
+        text = out.getvalue()
+        self.assertIn("system", text)
+        self.assertIn(f"{base_url}/uart.tar.gz", text)
+        with open("config.json") as f:
+            self.assertEqual(json.load(f)["modules"]["uart"]["source"], "system")
+
+
+class TestForceReRecordsHash(TempCase):
+    def _init_config(self, path="config.json"):
+        with open(path, "w") as f:
+            json.dump({"schema": "2.0", "project": "p", "version": "1.0.0",
+                       "board": "Nexys-A7-50T", "target": "nexys_a7_50t",
+                       "xdc": "x.xdc", "modules": {}}, f)
+
+    def test_without_force_a_local_edit_is_not_re_recorded(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        mod = _make_local_module(self.tmp, "edit-me")
+        os.chdir(proj)
+        self._init_config()
+        with capture():
+            anvil.cmd_addmodule(["../edit-me"])
+        with open("config.json") as f:
+            before = json.load(f)["modules"]["edit-me"]["hash"]
+
+        with open(os.path.join(mod, "top.v"), "a") as f:
+            f.write("// changed\n")
+
+        with capture():
+            anvil.cmd_addmodule(["../edit-me"])
+        with open("config.json") as f:
+            after = json.load(f)["modules"]["edit-me"]["hash"]
+        self.assertEqual(before, after)
+
+    def test_force_by_name_re_records_a_local_modules_hash(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        mod = _make_local_module(self.tmp, "edit-me2")
+        os.chdir(proj)
+        self._init_config()
+        with capture():
+            anvil.cmd_addmodule(["../edit-me2"])
+        with open("config.json") as f:
+            before = json.load(f)["modules"]["edit-me2"]["hash"]
+
+        with open(os.path.join(mod, "top.v"), "a") as f:
+            f.write("// changed\n")
+
+        with capture():
+            anvil.cmd_addmodule(["--force", "edit-me2"])
+        with open("config.json") as f:
+            after = json.load(f)["modules"]["edit-me2"]["hash"]
+        self.assertNotEqual(before, after)
+
+    def test_force_by_name_re_hashes_an_external_module_in_place(self):
+        # --force re-records what's on disk; it does not re-fetch, so a local
+        # edit is picked up rather than silently discarded.
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        os.chdir(proj)
+        self._init_config()
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.0.0")),
+                ("pkg/top.v", b"module fifo; endmodule"),
+            ], name="fifo.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+            with open("config.json") as f:
+                before = json.load(f)["modules"]["fifo"]
+            self.assertEqual(before["source"], f"{base_url}/fifo.tar.gz")
+
+            with open(os.path.join("external", "fifo@1.0.0", "top.v"), "a") as f:
+                f.write("// edited after fetch\n")
+
+            with capture():
+                anvil.cmd_addmodule(["--force", "fifo"])
+
+        with open("config.json") as f:
+            after = json.load(f)["modules"]["fifo"]
+        self.assertNotEqual(after["hash"], before["hash"])
+        self.assertEqual(fetch.module_hash(after["path"]), after["hash"])
+        self.assertEqual(after["source"], f"{base_url}/fifo.tar.gz")   # source is preserved, not touched
+
+    def test_force_on_a_missing_external_module_fails_cleanly(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        os.chdir(proj)
+        self._init_config()
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.0.0")),
+                ("pkg/top.v", b"module fifo; endmodule"),
+            ], name="fifo.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        shutil.rmtree(os.path.join("external", "fifo@1.0.0"))
+
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.cmd_addmodule(["--force", "fifo"])
+        self.assertIn("fifo", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
