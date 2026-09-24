@@ -42,6 +42,7 @@ import shutil
 import json
 import time
 import glob
+import fetch
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR     = os.path.dirname(os.path.realpath(__file__))
@@ -230,11 +231,10 @@ def eval_defsyms(defsyms, params):
     result = {}
     for name, expr in defsyms.items():
         try:
-            value = eval(expr, {"__builtins__": {}}, params)
-        except Exception as e:
-            print(f"[ERROR] eval defsym '{name}' = '{expr}': {e}")
-            sys.exit(1)
-        result[name] = value
+            result[name] = fetch.eval_arith(expr, params)
+        except ValueError as e:
+            fail(f"defsym '{name}' is not a valid expression",
+                 f"{name} = {expr}\n{e}")
     return result
 
 def get_v_files(directory):
