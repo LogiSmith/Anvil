@@ -476,6 +476,34 @@ def project_refs(line, root):
             refs.append(f"{os.path.relpath(full, root)}:{m.group(2)}")
     return refs
 
+_FILE_TOKEN = re.compile(r"[^\s'\",]+\.(?:sv|v|xdc|sdc|pcf|cpp|cc|c|S)\b")
+
+def command_files(cmdline, root):
+    """Project files named on a stage's command line.
+
+    Nothing is inferred: these are the inputs the stage was actually handed,
+    and a token only counts once it resolves to a file that exists in the
+    project. sv2v outputs are reported next to the source they came from,
+    since that is the file the user edits.
+    """
+    out = []
+    for tok in _FILE_TOKEN.findall(cmdline or ""):
+        path = os.path.expanduser(tok)
+        full = os.path.abspath(path if os.path.isabs(path) else os.path.join(root, path))
+        if not (full == root or full.startswith(root + os.sep)):
+            continue
+        if not os.path.isfile(full):
+            continue
+        rel = os.path.relpath(full, root)
+        conv = os.path.join(BUILD_CONVERTED, "")
+        if rel.startswith(conv) and rel.endswith(".v"):
+            src = os.path.basename(rel)[:-2] + ".sv"
+            if os.path.isfile(os.path.join(root, src)):
+                rel = f"{rel}  (generated from {src})"
+        if rel not in out:
+            out.append(rel)
+    return out
+
 def shorten(line, root):
     """Drop the project prefix so paths read as the user typed them."""
     return line.replace(root + os.sep, "")
@@ -528,6 +556,10 @@ FAILURE_HINTS = [
     (("Unsupported board type",),
      "the Makefile's TARGET is not in boards.json",
      "check \"target\" in config.json, then re-run -- `anvil boards` lists the valid ones"),
+    (("set_property",),
+     "a constraint in the XDC could not be applied",
+     "either that line's syntax is off, or it names a port the design does not "
+     "have -- compare the port list of your top module against {xdc}"),
 ]
 
 def failure_hint(lines, config=None):
@@ -562,7 +594,8 @@ def run_logged(cmd, log_path, verbose=False, on_line=None):
     proc.stdout.close()
     return proc.wait(), lines
 
-def report(rc, lines, log_path, root, stage=None, config=None, what="Build"):
+def report(rc, lines, log_path, root, stage=None, config=None, what="Build",
+           stage_cmd=None):
     """Print the warning/error summary. Returns True when the run succeeded."""
     # A symbol, not the word: the tool's own line already says "warning:".
     for w in own_warnings(lines, root):
@@ -580,6 +613,14 @@ def report(rc, lines, log_path, root, stage=None, config=None, what="Build"):
     if not errs:                      # nothing matched -- never hide the failure
         for line in [l for l in lines if l.strip()][-15:]:
             print(f"    {shorten(line, root)}")
+
+    # Name the files even when the cause is unclear -- the tool often reports
+    # a symptom without saying which input produced it.
+    files = command_files(stage_cmd, root)
+    if files:
+        print("  files this stage was given:")
+        for f in files:
+            print(f"    {f}")
 
     what_, fix = failure_hint(lines, config)
     if what_:
@@ -1049,7 +1090,7 @@ def cmd_synth(args):
         "symbiflow_write_fasm":      "fasm",
         "symbiflow_write_bitstream": "bitstream",
     }
-    state = {"stage": None}
+    state = {"stage": None, "cmd": None}
 
     def watch(line):
         for marker, name in stage_of.items():
@@ -1058,6 +1099,7 @@ def cmd_synth(args):
                     print(green("ok"))
                 print(f"  {name:<10}", end="", flush=True)
                 state["stage"] = name
+                state["cmd"]   = line     # names this stage's input files
                 break
 
     t0 = time.time()
@@ -1070,7 +1112,8 @@ def cmd_synth(args):
     if not verbose and state["stage"]:
         print(red("failed") if rc != 0 else green("ok"))
 
-    if not report(rc, lines, log_path, root, stage=state["stage"], config=config):
+    if not report(rc, lines, log_path, root, stage=state["stage"],
+                  config=config, stage_cmd=state["cmd"]):
         sys.exit(1)
 
     bit = find_bitstream(target)
