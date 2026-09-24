@@ -134,6 +134,9 @@ def find_by_local_path(current, base, arg):
                 return name
     return None
 
+def local_dir_missing(ref, base):
+    return is_path_dep(ref) and not os.path.isdir(os.path.normpath(os.path.join(base, ref)))
+
 def migrate_config(cfg):
     """Bring a config up to schema 2.0, returning (config, changed); never fetches -- schema 1 refs are never URLs."""
     if cfg.get("schema") == SCHEMA:
@@ -1011,7 +1014,10 @@ def cmd_removemodule(args):
     for name, entry in current.items():
         if name in to_remove:
             continue
-        meta, _, _ = load_module_meta(entry_ref(name, entry))
+        ref = entry_ref(name, entry)
+        if local_dir_missing(ref, base):
+            continue   # gone from disk -- cannot be asserting a dependency on anything
+        meta, _, _ = load_module_meta(ref, base_dir=base)
         for dep in meta.get("depends", []):
             _, _, dep_meta = resolve_deps(dep, registry, base_dir=os.getcwd())[0]
             if dep_meta["name"] in to_remove:
@@ -1021,7 +1027,12 @@ def cmd_removemodule(args):
     removed = [n for n in current if n in to_remove]
     config["modules"] = {n: e for n, e in current.items() if n not in to_remove}
     save_config(config)
-    build_makefile(config)
+
+    stale = [n for n, e in config["modules"].items() if local_dir_missing(entry_ref(n, e), base)]
+    if stale:
+        print(f"[WARN] Makefile not regenerated -- module director{'y' if len(stale) == 1 else 'ies'} missing: {', '.join(stale)}")
+    else:
+        build_makefile(config)
     print(f"[Anvil] Removed: {', '.join(removed)}")
 
 def cmd_modules(args):

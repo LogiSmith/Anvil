@@ -722,6 +722,33 @@ class TestRemoveLocalModuleByPath(TempCase):
         with open("config.json") as f:
             self.assertNotIn("gone-mod", json.load(f)["modules"])
 
+    def test_removes_a_module_when_an_unrelated_local_modules_directory_is_gone(self):
+        # neither the target of removal nor the depends-on-me check should touch
+        # a directory belonging to a module that isn't being removed.
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        _make_local_module(self.tmp, "modA")
+        _make_local_module(self.tmp, "modB")
+        os.chdir(proj)
+        with open("config.json", "w") as f:
+            json.dump({"schema": "2.0", "project": "p", "version": "1.0.0",
+                       "board": "Nexys-A7-50T", "target": "nexys_a7_50t",
+                       "xdc": "x.xdc", "modules": {}}, f)
+        with capture():
+            anvil.cmd_addmodule(["../modA"])
+            anvil.cmd_addmodule(["../modB"])
+        with open("config.json") as f:
+            self.assertEqual(set(json.load(f)["modules"]), {"modA", "modB"})
+
+        shutil.rmtree(os.path.join(self.tmp, "modB"))
+
+        with capture():
+            anvil.cmd_removemodule(["../modA"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertNotIn("modA", cfg["modules"])
+        self.assertIn("modB", cfg["modules"])
+
 
 if __name__ == "__main__":
     unittest.main()
