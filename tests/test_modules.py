@@ -1347,8 +1347,8 @@ class TestForceReRecordsHash(TempCase):
         with open(os.path.join(mod, "top.v"), "a") as f:
             f.write("// changed\n")
 
-        with capture():
-            anvil.cmd_addmodule(["--force", "edit-me2"])
+        with capture():   # consent for --force is TestForceDisclosure's job; this test is the hash mechanics
+            anvil.cmd_addmodule(["--yes", "--force", "edit-me2"])
         with open("config.json") as f:
             after = json.load(f)["modules"]["edit-me2"]["hash"]
         self.assertNotEqual(before, after)
@@ -1374,8 +1374,8 @@ class TestForceReRecordsHash(TempCase):
             with open(os.path.join("external", "fifo@1.0.0", "top.v"), "a") as f:
                 f.write("// edited after fetch\n")
 
-            with capture():
-                anvil.cmd_addmodule(["--force", "fifo"])
+            with capture():   # consent for --force is TestForceDisclosure's job; this test is the hash mechanics
+                anvil.cmd_addmodule(["--yes", "--force", "fifo"])
 
         with open("config.json") as f:
             after = json.load(f)["modules"]["fifo"]
@@ -1402,6 +1402,122 @@ class TestForceReRecordsHash(TempCase):
                 anvil.cmd_addmodule(["--force", "fifo"])
         self.assertIn("fifo", out.getvalue())
 
+
+
+class TestForceDisclosure(TempCase, StdinCase):
+    """--force must disclose before it re-anchors trust, not just re-hash silently."""
+
+    def setUp(self):
+        TempCase.setUp(self)
+        StdinCase.setUp(self)
+
+    def tearDown(self):
+        StdinCase.tearDown(self)
+        TempCase.tearDown(self)
+
+    def _install_fifo(self, base_url):
+        _tar_with(self.tmp, [
+            ("pkg/module.json", _mod_meta("fifo", "1.2.0")),
+            ("pkg/top.v", b"module fifo; endmodule"),
+        ], name="fifo.tar.gz")
+        with capture():
+            anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+
+    def test_force_on_tampered_module_with_new_soc_json_discloses_and_requires_consent(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._install_fifo(base_url)
+        with open("config.json") as f:
+            before_hash = json.load(f)["modules"]["fifo"]["hash"]
+
+        mod_dir = os.path.join("external", "fifo@1.2.0")
+        with open(os.path.join(mod_dir, "top.v"), "a") as f:
+            f.write("// tampered\n")
+        with open(os.path.join(mod_dir, "soc.json"), "w") as f:
+            f.write('{"compiler": "evil-cc", "objcopy": "objcopy"}')
+
+        # non-tty, no --yes -- refusing must not have recorded anything either
+        sys.stdin = io.StringIO("")
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.cmd_addmodule(["--force", "fifo"])
+        text = out.getvalue()
+        self.assertIn(before_hash, text)
+        self.assertIn("soc.json", text)
+        self.assertIn("--yes", text)
+        with open("config.json") as f:
+            self.assertEqual(json.load(f)["modules"]["fifo"]["hash"], before_hash)
+
+        # explicit y -- records, and the transcript shows both hashes plus the flag
+        sys.stdin = FakeTTY("y\n")
+        with capture() as out:
+            anvil.cmd_addmodule(["--force", "fifo"])
+        text = out.getvalue()
+        self.assertIn(before_hash, text)
+        self.assertIn("soc.json", text)
+        with open("config.json") as f:
+            entry = json.load(f)["modules"]["fifo"]
+        self.assertNotEqual(before_hash, entry["hash"])
+        self.assertIn(entry["hash"], text)
+        self.assertEqual(entry["source"], f"{base_url}/fifo.tar.gz")   # re-recorded, not re-fetched
+
+    def test_force_on_unchanged_module_is_a_reported_no_op(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._install_fifo(base_url)
+        with open("config.json") as f:
+            before = json.load(f)
+
+        sys.stdin = io.StringIO("")   # no prompt should even be needed -- nothing changed
+        with capture() as out:
+            anvil.cmd_addmodule(["--force", "fifo"])
+        self.assertIn("unchanged", out.getvalue().lower())
+
+        with open("config.json") as f:
+            after = json.load(f)
+        self.assertEqual(before, after)
+
+
+class TestMidInstallFailure(TempCase):
+    def test_failure_partway_through_names_installed_and_leftover_modules(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("aa", "1.0.0")),
+                ("pkg/top.v", b"module aa; endmodule"),
+            ], name="aa.tar.gz")
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("bb", "1.0.0")),
+                ("pkg/top.v", b"module bb; endmodule"),
+            ], name="bb.tar.gz")
+
+            real_hash = fetch.module_hash
+            calls = []
+            def flaky_hash(mod_dir):
+                calls.append(mod_dir)
+                if len(calls) == 2:
+                    raise RuntimeError("disk exploded")
+                return real_hash(mod_dir)
+            fetch.module_hash = flaky_hash
+            try:
+                with capture() as out:
+                    with self.assertRaises(SystemExit):
+                        anvil.cmd_addmodule(
+                            ["--yes", f"{base_url}/aa.tar.gz", f"{base_url}/bb.tar.gz"])
+            finally:
+                fetch.module_hash = real_hash
+
+        text = out.getvalue()
+        self.assertIn("aa", text)
+        self.assertIn("bb", text)
+        self.assertNotIn("Traceback", text)
+        self.assertTrue(os.path.isdir(os.path.join("external", "aa@1.0.0")))
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["modules"], {})   # nothing written -- not even the successful half
 
 if __name__ == "__main__":
     unittest.main()

@@ -177,6 +177,20 @@ def plan_external(refs, staging, existing):
                 queue.append((dep, name))
     return out
 
+def ask_consent(prompt, assume_yes, refuse_msg):
+    """The shared yes/no gate: --yes bypasses, a non-tty without it refuses, only an explicit y counts."""
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"[ERROR] {refuse_msg}")
+        print("        stdin is not a terminal -- pass --yes if this is intended")
+        sys.exit(1)
+    try:
+        answer = input(prompt)
+    except EOFError:   # e.g. Ctrl-D -- absence of an answer is not a yes
+        answer = ""
+    return answer.strip().lower() == "y"
+
 def confirm_external(plan, assume_yes):
     """Show every module the plan will install, then ask -- silence must never read as yes."""
     if not plan:
@@ -193,18 +207,57 @@ def confirm_external(plan, assume_yes):
         print()
     print("Names are declared by the modules themselves; "
           "the URL is what you are trusting.")
+    return ask_consent(f"Add these {len(plan)} external modules? [y/N] ", assume_yes,
+                        "refusing to install external modules without confirmation")
 
-    if assume_yes:
+def plan_force(names, current):
+    """The current on-disk hash of each already-recorded module, without writing anything."""
+    out = []
+    for name in names:
+        entry = current[name]
+        source = entry.get("source", "system")
+        if fetch.classify(source) == "url":
+            mod_dir = entry["path"]
+            if not os.path.isfile(os.path.join(mod_dir, "module.json")):
+                fail(f"module '{name}' is missing",
+                     f"{mod_dir} does not exist -- run anvil build to re-fetch it first")
+            with open(os.path.join(mod_dir, "module.json")) as f:
+                meta = json.load(f)
+        else:
+            meta, mod_dir, _ = load_module_meta(entry_ref(name, entry), base_dir=os.getcwd())
+        out.append({
+            "name": name,
+            "version": meta.get("version", entry["version"]),
+            "source": source,
+            "path": entry["path"],   # unchanged -- re-recording never moves anything
+            "before": entry["hash"],
+            "after": fetch.module_hash(mod_dir),   # mod_dir is where the content is, for hashing only
+            # unconditional: config.json does not record whether soc.json was present when
+            # this was first added, so "gained a soc.json" is not something we can detect --
+            # flagging it every time is the safe substitute
+            "has_soc": os.path.isfile(os.path.join(mod_dir, "soc.json")),
+        })
+    return out
+
+def confirm_force(plan, assume_yes):
+    """Re-recording a hash is the one path that bypasses a fresh add's prompt -- gate it the same way."""
+    changed = [p for p in plan if p["before"] != p["after"]]
+    for p in plan:
+        if p["before"] == p["after"]:
+            print(f"[Anvil] {p['name']} is unchanged -- hash already matches, nothing to do.")
+    if not changed:
         return True
-    if not sys.stdin.isatty():
-        print("[ERROR] refusing to install external modules without confirmation")
-        print("        stdin is not a terminal -- pass --yes if this is intended")
-        sys.exit(1)
-    try:
-        answer = input(f"Add these {len(plan)} external modules? [y/N] ")
-    except EOFError:   # e.g. Ctrl-D -- absence of an answer is not a yes
-        answer = ""
-    return answer.strip().lower() == "y"
+
+    print("\nThese modules will be re-recorded:\n")
+    for p in changed:
+        print(f"  {p['name']}  {p['version']}")
+        print(f"      recorded  {p['before']}")
+        print(f"      found     {p['after']}")
+        if p["has_soc"]:
+            print(yellow("      ⚠ ships soc.json -- chooses the compiler that runs"))
+        print()
+    return ask_consent(f"Re-record these {len(changed)} module(s)? [y/N] ", assume_yes,
+                        "refusing to re-record module hashes without confirmation")
 
 def find_by_local_path(current, base, arg):
     """The module in `current` whose path/source normalizes to `arg`, or None -- survives a deleted directory."""
@@ -1033,34 +1086,34 @@ def cmd_addmodule(args):
     current  = config.get("modules", {})
 
     to_add, added_keys = {}, []
-    bundled_refs, external_refs = [], []
-    for ref in refs:
-        if force and ref in current:
-            entry = current[ref]
-            if fetch.classify(entry.get("source", "")) == "url":
-                # re-hash what's on disk in place -- re-fetching would discard a local hand-edit
-                mod_dir = entry["path"]
-                if not os.path.isfile(os.path.join(mod_dir, "module.json")):
-                    fail(f"module '{ref}' is missing",
-                         f"{mod_dir} does not exist -- run anvil build to re-fetch it first")
-                with open(os.path.join(mod_dir, "module.json")) as f:
-                    meta = json.load(f)
-                version = meta.get("version", entry["version"])
-                to_add[meta["name"]] = module_entry(version, entry["source"], mod_dir,
-                                                      fetch.module_hash(mod_dir))
-                added_keys.append(f"{meta['name']}@{version}")
+
+    # --force only re-records the single named entry; it never walks that module's own
+    # dependency chain, so no *other* entry's hash or soc.json status changes unannounced
+    force_names = [r for r in refs if force and r in current]
+    other_refs  = [r for r in refs if r not in force_names]
+
+    if force_names:
+        plan = plan_force(force_names, current)
+        if not confirm_force(plan, assume_yes):
+            print("[Anvil] Aborted -- nothing re-recorded.")
+            return
+        for p in plan:
+            if p["before"] == p["after"]:
                 continue
-            ref = entry_ref(ref, entry)   # local/bundled -- re-resolve and recompute the hash
+            to_add[p["name"]] = module_entry(p["version"], p["source"], p["path"], p["after"])
+            added_keys.append(f"{p['name']}@{p['version']}")
+
+    bundled_refs, external_refs = [], []
+    for ref in other_refs:
         (external_refs if fetch.classify(ref) == "url" else bundled_refs).append(ref)
 
     for mod in bundled_refs:
         chain = resolve_deps(mod, registry, base_dir=os.getcwd())
         for (key, mod_dir, meta) in chain:
             name = meta["name"]
-            if force or (name not in current and name not in to_add):
+            if name not in current and name not in to_add:
                 to_add[name] = make_entry(key, mod_dir, meta)
-                if key not in added_keys:
-                    added_keys.append(key)
+                added_keys.append(key)
 
     if external_refs:
         staging = tempfile.mkdtemp()
@@ -1070,16 +1123,31 @@ def cmd_addmodule(args):
                 print("[Anvil] Aborted -- nothing installed.")
                 return
             os.makedirs(EXTERNAL_DIR, exist_ok=True)
-            for m in plan:
+            installed = []
+            for i, m in enumerate(plan):
                 dest = os.path.join(EXTERNAL_DIR, f"{m['name']}@{m['version']}")
-                if os.path.isdir(dest):
-                    shutil.rmtree(dest)
-                shutil.move(m["staged"], dest)
-                to_add[m["name"]] = module_entry(m["version"], m["source"], dest,
-                                                  fetch.module_hash(dest))
+                try:
+                    if os.path.isdir(dest):
+                        shutil.rmtree(dest)
+                    shutil.move(m["staged"], dest)
+                    digest = fetch.module_hash(dest)
+                    with open(os.path.join(dest, "module.json")) as f:
+                        dep_meta = json.load(f)
+                except Exception as e:
+                    # config.json is never written on this path -- the successful half is
+                    # only orphaned on disk, never loaded by a later build
+                    lines = ([f"  {d}" for d in installed]
+                             if installed else ["nothing was installed before the failure"])
+                    if installed:
+                        lines.insert(0, "installed before the failure -- still on disk, remove by hand if unwanted:")
+                    lines.append(f"failed on '{m['name']}': {e}")
+                    skipped = [p["name"] for p in plan[i + 1:]]
+                    if skipped:
+                        lines.append(f"not attempted: {', '.join(skipped)}")
+                    fail(f"installing '{m['name']}' failed -- config.json was not written", lines)
+                to_add[m["name"]] = module_entry(m["version"], m["source"], dest, digest)
                 added_keys.append(f"{m['name']}@{m['version']}")
-                with open(os.path.join(dest, "module.json")) as f:
-                    dep_meta = json.load(f)
+                installed.append(dest)
                 for dep in dep_meta.get("depends", []):
                     if fetch.classify(dep) == "name":   # bundled deps of a fetched module
                         for (key, mod_dir, meta) in resolve_deps(dep, registry, base_dir=os.getcwd()):
