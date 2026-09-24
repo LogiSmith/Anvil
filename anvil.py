@@ -42,6 +42,7 @@ import shutil
 import json
 import time
 import glob
+import tempfile
 import fetch
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
@@ -61,6 +62,7 @@ OPENFPGALOADER = "/usr/local/bin/openFPGALoader"
 TOOLCHAIN_INSTALLER = "https://raw.githubusercontent.com/LogiSmith/toolchain-setup/main/install.sh"
 
 CONFIG_FILE    = "config.json"
+EXTERNAL_DIR   = "external"
 TB_DIR         = "tb"
 FW_DIR         = "firmware"
 FW_SRC         = "firmware/src"
@@ -124,6 +126,22 @@ def make_entry(key, mod_dir, meta):
 def entry_ref(name, entry):
     """The ref string that resolves `entry` again: its path if local, else name@version."""
     return entry["path"] if is_path_dep(entry["path"]) else f"{name}@{entry['version']}"
+
+def install_external(ref, staging):
+    """Download and validate `ref` into a fresh directory under `staging`; nothing is installed yet.
+
+    Returns (name, meta, staged_dir, resolved_url). The caller decides whether to keep it --
+    Task 7 asks for consent once the whole dependency set is known.
+    """
+    _, _, subpath = fetch.split_ref(ref)
+    work = tempfile.mkdtemp(dir=staging)
+    archive, resolved = fetch.download_archive(ref, work)
+    unpacked = os.path.join(work, "unpacked")
+    os.makedirs(unpacked)
+    fetch.extract(archive, unpacked)
+    root = fetch.find_module_root(unpacked, subpath)
+    meta = fetch.validate_module(root)
+    return meta["name"], meta, root, resolved
 
 def find_by_local_path(current, base, arg):
     """The module in `current` whose path/source normalizes to `arg`, or None -- survives a deleted directory."""

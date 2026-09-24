@@ -568,6 +568,208 @@ class TestDownloadArchiveChunkedWithStrayContentLength(TempCase):
             srv.server_close()
 
 
+class TestFindModuleRoot(TempCase):
+    def test_at_archive_root(self):
+        d = os.path.join(self.tmp, "u")
+        os.makedirs(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        self.assertEqual(fetch.find_module_root(d, None), d)
+
+    def test_in_single_subdir(self):
+        d = os.path.join(self.tmp, "u")
+        inner = os.path.join(d, "repo-1.2.0")
+        os.makedirs(inner)
+        with open(os.path.join(inner, "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        self.assertEqual(fetch.find_module_root(d, None), inner)
+
+    def test_rejects_two_subdirs(self):
+        d = os.path.join(self.tmp, "u")
+        os.makedirs(os.path.join(d, "a"))
+        os.makedirs(os.path.join(d, "b"))
+        with self.assertRaises(fetch.InvalidModule) as ctx:
+            fetch.find_module_root(d, None)
+        self.assertIn("structure", str(ctx.exception).lower())
+
+    def test_rejects_empty_archive(self):
+        d = os.path.join(self.tmp, "u")
+        os.makedirs(d)
+        with self.assertRaises(fetch.InvalidModule) as ctx:
+            fetch.find_module_root(d, None)
+        self.assertIn("structure", str(ctx.exception).lower())
+
+    def test_rejects_wrapper_with_no_module_json(self):
+        d = os.path.join(self.tmp, "u")
+        os.makedirs(os.path.join(d, "repo-1.0.0"))
+        with self.assertRaises(fetch.InvalidModule) as ctx:
+            fetch.find_module_root(d, None)
+        self.assertIn("module.json", str(ctx.exception))
+
+    def test_with_subpath(self):
+        d = os.path.join(self.tmp, "u")
+        inner = os.path.join(d, "repo-1", "modules", "fifo")
+        os.makedirs(inner)
+        with open(os.path.join(inner, "module.json"), "w") as f:
+            f.write('{"name":"fifo","version":"1.0.0"}')
+        self.assertEqual(fetch.find_module_root(d, "modules/fifo"), inner)
+
+    def test_subpath_that_does_not_exist(self):
+        d = os.path.join(self.tmp, "u")
+        os.makedirs(os.path.join(d, "repo-1"))
+        with open(os.path.join(d, "repo-1", "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        with self.assertRaises(fetch.InvalidModule):
+            fetch.find_module_root(d, "modules/nope")
+
+    def test_subpath_with_dotdot_is_rejected(self):
+        d = os.path.join(self.tmp, "u")
+        os.makedirs(os.path.join(d, "repo-1"))
+        with open(os.path.join(d, "repo-1", "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        with self.assertRaises(fetch.InvalidModule) as ctx:
+            fetch.find_module_root(d, "../../../../etc")
+        self.assertIn("escapes", str(ctx.exception))
+
+
+class TestValidateModule(TempCase):
+    def test_requires_module_json(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        with self.assertRaises(fetch.InvalidModule):
+            fetch.validate_module(d)
+
+    def test_requires_rtl(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        with self.assertRaises(fetch.InvalidModule) as ctx:
+            fetch.validate_module(d)
+        self.assertIn(".v", str(ctx.exception))
+
+    def test_accepts_a_real_module(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        with open(os.path.join(d, "top.v"), "w") as f:
+            f.write("module m; endmodule")
+        self.assertEqual(fetch.validate_module(d)["name"], "m")
+
+    def test_rejects_invalid_json(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write("{not json")
+        with self.assertRaises(fetch.InvalidModule):
+            fetch.validate_module(d)
+
+    def test_rejects_missing_name(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write('{"version":"1.0.0"}')
+        with self.assertRaises(fetch.InvalidModule) as ctx:
+            fetch.validate_module(d)
+        self.assertIn("name", str(ctx.exception))
+
+    def test_rejects_invalid_soc_json(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        with open(os.path.join(d, "top.v"), "w") as f:
+            f.write("module m; endmodule")
+        with open(os.path.join(d, "soc.json"), "w") as f:
+            f.write("{bad")
+        with self.assertRaises(fetch.InvalidModule) as ctx:
+            fetch.validate_module(d)
+        self.assertIn("soc.json", str(ctx.exception))
+
+    def test_accepts_valid_soc_json(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write('{"name":"m","version":"1.0.0"}')
+        with open(os.path.join(d, "top.v"), "w") as f:
+            f.write("module m; endmodule")
+        with open(os.path.join(d, "soc.json"), "w") as f:
+            f.write('{"ram":1}')
+        self.assertEqual(fetch.validate_module(d)["name"], "m")
+
+
+class TestInstallExternal(TempCase):
+    def test_installs_a_valid_module(self):
+        _tar_with(self.tmp, [
+            ("repo-1.0.0/module.json", b'{"name":"fifo","version":"1.0.0"}'),
+            ("repo-1.0.0/top.v", b"module fifo; endmodule"),
+        ])
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        with serve(self.tmp) as base_url:
+            name, meta, staged_dir, resolved = anvil.install_external(
+                f"{base_url}/a.tar.gz", staging)
+        self.assertEqual(anvil.EXTERNAL_DIR, "external")
+        self.assertEqual(name, "fifo")
+        self.assertEqual(meta["version"], "1.0.0")
+        self.assertTrue(os.path.isfile(os.path.join(staged_dir, "top.v")))
+        self.assertEqual(resolved, f"{base_url}/a.tar.gz")
+        self.assertTrue(staged_dir.startswith(staging + os.sep))
+
+    def test_subpath_selects_one_module_of_a_monorepo(self):
+        _tar_with(self.tmp, [
+            ("rtl-v1/modules/fifo/module.json", b'{"name":"fifo","version":"1.0.0"}'),
+            ("rtl-v1/modules/fifo/top.v", b"module fifo; endmodule"),
+            ("rtl-v1/modules/uart/module.json", b'{"name":"uart","version":"1.0.0"}'),
+        ])
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        with serve(self.tmp) as base_url:
+            name, meta, staged_dir, resolved = anvil.install_external(
+                f"{base_url}/a.tar.gz#modules/fifo", staging)
+        self.assertEqual(name, "fifo")
+        self.assertTrue(staged_dir.endswith(os.path.join("modules", "fifo")))
+
+    def test_rejects_an_invalid_module_but_leaves_staging_usable(self):
+        _tar_with(self.tmp, [("repo/module.json", b'{"name":"m","version":"1.0.0"}')])
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.InvalidModule):
+                anvil.install_external(f"{base_url}/a.tar.gz", staging)
+        self.assertTrue(os.path.isdir(staging))
+
+    def test_missing_archive_raises_no_archive_found(self):
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.NoArchiveFound):
+                anvil.install_external(f"{base_url}/does-not-exist.tar.gz", staging)
+        self.assertTrue(os.path.isdir(staging))
+
+    def test_subpath_with_dotdot_is_rejected(self):
+        _tar_with(self.tmp, [
+            ("repo/module.json", b'{"name":"m","version":"1.0.0"}'),
+            ("repo/top.v", b"module m; endmodule"),
+        ])
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.InvalidModule) as ctx:
+                anvil.install_external(f"{base_url}/a.tar.gz#../../../etc", staging)
+        self.assertIn("escapes", str(ctx.exception))
+
+    def test_malicious_archive_raises_unsafe_archive_and_leaves_staging_usable(self):
+        _tar_with(self.tmp, [("../escape.txt", b"nope")])
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.UnsafeArchive):
+                anvil.install_external(f"{base_url}/a.tar.gz", staging)
+        self.assertTrue(os.path.isdir(staging))
+
+
 def _make_local_module(base, name="local-mod", version="1.0.0"):
     d = os.path.join(base, name)
     os.makedirs(d, exist_ok=True)

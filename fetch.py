@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import http.client
+import json
 import operator
 import os
 import re
@@ -278,3 +279,59 @@ def download_archive(ref, dest_dir):
                 os.remove(tmp)
     raise NoArchiveFound("no archive found for " + ref + "\n    tried:\n      "
                           + "\n      ".join(tried))
+
+class InvalidModule(Exception):
+    """An unpacked archive is not a usable Anvil module."""
+
+def find_module_root(unpacked, subpath=None):
+    """Where module.json lives: the archive root, or the single directory a forge wraps it in."""
+    if os.path.isfile(os.path.join(unpacked, "module.json")):
+        base = unpacked
+    else:
+        entries = [e for e in os.listdir(unpacked)
+                   if os.path.isdir(os.path.join(unpacked, e))]
+        if len(entries) != 1:
+            raise InvalidModule(
+                "unexpected archive structure: expected module.json at the root or in a "
+                f"single directory, found {len(entries)} directories")
+        base = os.path.join(unpacked, entries[0])
+        if not subpath and not os.path.isfile(os.path.join(base, "module.json")):
+            raise InvalidModule(f"no module.json in '{entries[0]}'")
+
+    if not subpath:
+        return base
+
+    # subpath is user input applied after the wrapper is stripped -- ".." must not reach outside
+    root = os.path.normpath(os.path.join(base, subpath))
+    if root != unpacked and not root.startswith(unpacked + os.sep):
+        raise InvalidModule(f"subpath escapes the archive: {subpath}")
+    if not os.path.isfile(os.path.join(root, "module.json")):
+        raise InvalidModule(f"no module.json at subpath '{subpath}'")
+    return root
+
+def validate_module(mod_dir):
+    """Parsed module.json if `mod_dir` is a usable module, else raise explaining what is missing."""
+    meta_path = os.path.join(mod_dir, "module.json")
+    if not os.path.isfile(meta_path):
+        raise InvalidModule("no module.json")
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except json.JSONDecodeError as e:
+        raise InvalidModule(f"module.json is not valid JSON: {e}")
+    if not isinstance(meta, dict):
+        raise InvalidModule("module.json must be a JSON object")
+    for field in ("name", "version"):
+        if not meta.get(field):
+            raise InvalidModule(f"module.json has no '{field}'")
+    if not any(n.endswith((".v", ".sv"))
+               for _, _, names in os.walk(mod_dir) for n in names):
+        raise InvalidModule("no .v or .sv files in the module")
+    soc = os.path.join(mod_dir, "soc.json")
+    if os.path.isfile(soc):
+        try:
+            with open(soc) as f:
+                json.load(f)
+        except json.JSONDecodeError as e:
+            raise InvalidModule(f"soc.json is not valid JSON: {e}")
+    return meta
