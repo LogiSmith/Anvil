@@ -65,17 +65,13 @@ class TestEvalArith(unittest.TestCase):
             fetch.eval_arith("2 ** 64", {})       # ** is not in the allowed set at all
 
     def test_rejects_long_operator_chain(self):
-        # A flat chain of allowed operators parses as a deeply nested BinOp
-        # tree; without a node-count bound this blows the recursion stack
-        # instead of raising ValueError.
+        # a flat chain nests one BinOp per term -- unbounded, this overflows the stack
         with self.assertRaises(ValueError):
             fetch.eval_arith("+".join(["1"] * 1000), {})
 
 
 class TestEvalDefsyms(TempCase):
-    """anvil.eval_defsyms must turn a bad expression into a clean exit via
-    fail(), never a raised exception or a raw traceback -- including for the
-    long-chain input that used to escape eval_arith as a RecursionError."""
+    """eval_defsyms reports a bad expression via fail() and exits, never raises."""
 
     def test_bad_expression_reports_via_fail_and_exits(self):
         with capture() as out:
