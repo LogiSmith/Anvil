@@ -749,6 +749,65 @@ class TestRemoveLocalModuleByPath(TempCase):
         self.assertNotIn("modA", cfg["modules"])
         self.assertIn("modB", cfg["modules"])
 
+    def _scaffold_empty_project(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        os.chdir(proj)
+        with open("config.json", "w") as f:
+            json.dump({"schema": "2.0", "project": "p", "version": "1.0.0",
+                       "board": "Nexys-A7-50T", "target": "nexys_a7_50t",
+                       "xdc": "x.xdc", "modules": {}}, f)
+
+    def test_removes_by_absolute_path_with_directory_present(self):
+        self._scaffold_empty_project()
+        mod_dir = _make_local_module(self.tmp, "mAbs")
+        with capture():
+            anvil.cmd_addmodule(["../mAbs"])
+
+        with capture():
+            anvil.cmd_removemodule([mod_dir])
+        with open("config.json") as f:
+            self.assertNotIn("mAbs", json.load(f)["modules"])
+
+    def test_removes_by_absolute_path_after_directory_deleted(self):
+        self._scaffold_empty_project()
+        mod_dir = _make_local_module(self.tmp, "mAbs2")
+        with capture():
+            anvil.cmd_addmodule(["../mAbs2"])
+        shutil.rmtree(mod_dir)
+
+        with capture():
+            anvil.cmd_removemodule([mod_dir])
+        with open("config.json") as f:
+            self.assertNotIn("mAbs2", json.load(f)["modules"])
+
+    def test_unknown_argument_fails_and_leaves_config_untouched(self):
+        self._scaffold_empty_project()
+        with open("config.json") as f:
+            before = json.load(f)
+
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.cmd_removemodule(["no-such-module"])
+        self.assertIn("no-such-module", out.getvalue())
+
+        with open("config.json") as f:
+            self.assertEqual(json.load(f), before)
+
+    def test_one_unknown_argument_blocks_the_whole_removal(self):
+        self._scaffold_empty_project()
+        _make_local_module(self.tmp, "realmod")
+        with capture():
+            anvil.cmd_addmodule(["../realmod"])
+
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.cmd_removemodule(["../realmod", "no-such-module"])
+        self.assertIn("no-such-module", out.getvalue())
+
+        with open("config.json") as f:
+            self.assertIn("realmod", json.load(f)["modules"])
+
 
 if __name__ == "__main__":
     unittest.main()

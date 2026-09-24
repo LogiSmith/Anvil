@@ -997,18 +997,20 @@ def cmd_removemodule(args):
     base    = os.getcwd()
 
     to_remove = set()
+    unknown = []
     for a in args:
-        if is_path_dep(a):
-            match = find_by_local_path(current, base, a)
-            if match is None:
-                try:
-                    meta, _, _ = load_module_meta(a, base_dir=base)
-                except SystemExit:
-                    fail(f"cannot remove '{a}' -- not a module directory and not in this project's modules")
-                match = meta["name"]
-            to_remove.add(match)
+        match = find_by_local_path(current, base, a)
+        if match is None:
+            name = parse_module_ref(a)[0]
+            if name in current:
+                match = name
+        if match is None:
+            unknown.append(a)
         else:
-            to_remove.add(parse_module_ref(a)[0])
+            to_remove.add(match)
+
+    if unknown:
+        fail(f"cannot remove {', '.join(unknown)} -- not in this project's modules")
 
     registry = load_modules_registry()
     for name, entry in current.items():
