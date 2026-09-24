@@ -232,10 +232,7 @@ def plan_force(names, current):
             "path": entry["path"],   # unchanged -- re-recording never moves anything
             "before": entry["hash"],
             "after": fetch.module_hash(mod_dir),   # mod_dir is where the content is, for hashing only
-            # unconditional: config.json does not record whether soc.json was present when
-            # this was first added, so "gained a soc.json" is not something we can detect --
-            # flagging it every time is the safe substitute
-            "has_soc": os.path.isfile(os.path.join(mod_dir, "soc.json")),
+            "has_soc": os.path.isfile(os.path.join(mod_dir, "soc.json")),   # can't detect "gained" one, so always flag
         })
     return out
 
@@ -384,6 +381,8 @@ def resolve_deps(dep, registry, resolved=None, seen=None, base_dir=None):
     seen.add(key)
 
     for child in meta.get("depends", []):
+        if fetch.classify(child) == "url":
+            continue   # already its own top-level config.json entry -- plan_external put it there
         resolve_deps(child, registry, resolved, seen, base_dir=mod_dir)
 
     if key not in [r[0] for r in resolved]:

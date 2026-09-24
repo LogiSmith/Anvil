@@ -1519,5 +1519,62 @@ class TestMidInstallFailure(TempCase):
             cfg = json.load(f)
         self.assertEqual(cfg["modules"], {})   # nothing written -- not even the successful half
 
+
+class TestTransitiveExternalDependency(TempCase):
+    """A URL dependency is its own top-level config.json entry; resolve_deps must not re-walk it."""
+
+    def test_external_depending_on_external_resolves_end_to_end(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            axi_url = f"{base_url}/axi.tar.gz"
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.0.0", depends=[axi_url])),
+                ("pkg/top.v", b"module fifo; endmodule"),
+            ], name="fifo.tar.gz")
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("axi", "1.0.0")),
+                ("pkg/top.v", b"module axi; endmodule"),
+            ], name="axi.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertIn("fifo", cfg["modules"])
+        self.assertIn("axi", cfg["modules"])
+
+        sources = anvil.collect_sources(config=cfg)
+        self.assertTrue(any(s.endswith(os.path.join("fifo@1.0.0", "top.v")) for s in sources), sources)
+        self.assertTrue(any(s.endswith(os.path.join("axi@1.0.0", "top.v")) for s in sources), sources)
+
+    def test_external_depending_on_external_depending_on_bundled_resolves(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            axi_url = f"{base_url}/axi.tar.gz"
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo2", "1.0.0", depends=[axi_url])),
+                ("pkg/top.v", b"module fifo2; endmodule"),
+            ], name="fifo.tar.gz")
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("axi2", "1.0.0", depends=["picorv32"])),
+                ("pkg/top.v", b"module axi2; endmodule"),
+            ], name="axi.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertIn("fifo2", cfg["modules"])
+        self.assertIn("axi2", cfg["modules"])
+        self.assertIn("picorv32", cfg["modules"])
+
+        sources = anvil.collect_sources(config=cfg)
+        self.assertTrue(any(s.endswith(os.path.join("fifo2@1.0.0", "top.v")) for s in sources), sources)
+        self.assertTrue(any(s.endswith(os.path.join("axi2@1.0.0", "top.v")) for s in sources), sources)
+        self.assertTrue(any(s.endswith("picorv32.v") for s in sources), sources)
+
+
 if __name__ == "__main__":
     unittest.main()
