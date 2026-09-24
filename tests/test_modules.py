@@ -257,6 +257,30 @@ class TestExtract(TempCase):
         with self.assertRaises(fetch.UnsafeArchive):
             fetch.extract(p, dest)
 
+    def test_rejects_zip_escape_via_preexisting_symlink(self):
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        os.symlink(outside, os.path.join(dest, "link"), target_is_directory=True)
+        p = os.path.join(self.tmp, "evil.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("link/evil.txt", "nope")
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
+        self.assertFalse(os.path.exists(os.path.join(outside, "evil.txt")))
+
+    def test_rejects_tar_escape_via_preexisting_symlink(self):
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        dest = os.path.join(self.tmp, "out")
+        os.makedirs(dest)
+        os.symlink(outside, os.path.join(dest, "link"), target_is_directory=True)
+        p = _tar_with(self.tmp, [("link/evil.txt", b"nope")], name="evil.tar.gz")
+        with self.assertRaises(fetch.UnsafeArchive):
+            fetch.extract(p, dest)
+        self.assertFalse(os.path.exists(os.path.join(outside, "evil.txt")))
+
 
 if __name__ == "__main__":
     unittest.main()

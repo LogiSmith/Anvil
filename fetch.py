@@ -97,7 +97,10 @@ def _checked_target(name, dest):
     target = os.path.normpath(os.path.join(dest, name))
     if target != dest and not target.startswith(dest + os.sep):
         raise UnsafeArchive(f"path escapes the destination: {name}")
-    return target
+    real = os.path.realpath(target)  # a path component may itself be a pre-existing symlink
+    if real != dest and not real.startswith(dest + os.sep):
+        raise UnsafeArchive(f"path escapes the destination through a symlink: {name}")
+    return target  # not race-free: a symlink planted after this check still wins
 
 def _check_budget(count, total):
     if count > MAX_ENTRIES:
@@ -108,8 +111,9 @@ def _check_budget(count, total):
 def _extract_tar(path, dest):
     with tarfile.open(path) as tar:
         members, count, total = [], 0, 0
-        for m in tar.getmembers():
-            if m.issym() or m.islnk():         # a link can point anywhere; forbid both kinds
+        m = tar.next()
+        while m is not None:                   # not getmembers(): budget must reject before
+            if m.issym() or m.islnk():          # the next() that skips (decompresses) a body
                 raise UnsafeArchive(f"archive contains a link: {m.name}")
             if not (m.isreg() or m.isdir()):
                 raise UnsafeArchive(f"archive contains a special file: {m.name}")
@@ -118,10 +122,8 @@ def _extract_tar(path, dest):
             total += m.size
             _check_budget(count, total)
             members.append(m)
-        try:
-            tar.extractall(dest, members=members, filter="data")
-        except TypeError:  # filter= predates Anvil's Python floor on some builds
-            tar.extractall(dest, members=members)
+            m = tar.next()
+        tar.extractall(dest, members=members, filter="data")
 
 def _extract_zip(path, dest):
     with zipfile.ZipFile(path) as zf:
@@ -138,12 +140,9 @@ def _extract_zip(path, dest):
         zf.extractall(dest, members=infos)
 
 def extract(archive_path, dest):
-    """Unpack `archive_path` into `dest`; every member is validated before anything is written.
-
-    zipfile has no safety filter at all, and tarfile's is not the default on Python 3.12,
-    so neither library's own protection is relied on.
-    """
-    dest = os.path.abspath(dest)
+    """Unpack `archive_path` into `dest`; every member is validated before anything is written."""
+    # zipfile has no safety filter at all, and tarfile's isn't the default until Python 3.14
+    dest = os.path.realpath(dest)
     if tarfile.is_tarfile(archive_path):
         _extract_tar(archive_path, dest)
     elif zipfile.is_zipfile(archive_path):
