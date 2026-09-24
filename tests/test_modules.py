@@ -118,11 +118,29 @@ class TestModuleHash(TempCase):
     def test_hash_ignores_files_anvil_does_not_read(self):
         d = _make_module(self.tmp)
         before = fetch.module_hash(d)
-        for junk in ["README.md", "notes.log", "sim.vcd", "build/top.bit", ".git/HEAD"]:
+        for junk in ["README.md", "notes.log", "sim.vcd"]:
             p = os.path.join(d, junk)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w") as f:
                 f.write("noise")
+        self.assertEqual(fetch.module_hash(d), before)
+
+    def test_skip_dirs_filters_rtl_in_build(self):
+        d = _make_module(self.tmp)
+        before = fetch.module_hash(d)
+        p = os.path.join(d, "build", "synth.v")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write("module synth; endmodule\n")
+        self.assertEqual(fetch.module_hash(d), before)
+
+    def test_skip_dirs_filters_rtl_in_git(self):
+        d = _make_module(self.tmp)
+        before = fetch.module_hash(d)
+        p = os.path.join(d, ".git", "object.v")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write("module object; endmodule\n")
         self.assertEqual(fetch.module_hash(d), before)
 
     def test_hash_changes_when_rtl_changes(self):
@@ -141,6 +159,24 @@ class TestModuleHash(TempCase):
         a = _make_module(os.path.join(self.tmp, "one"))
         b = _make_module(os.path.join(self.tmp, "two"))
         self.assertEqual(fetch.module_hash(a), fetch.module_hash(b))
+
+    def test_hash_is_not_ambiguous_to_content(self):
+        # Fixed-width digest encoding prevents NUL bytes in content from being mistaken for separators.
+        a_dir = os.path.join(self.tmp, "a")
+        b_dir = os.path.join(self.tmp, "b")
+        os.makedirs(a_dir)
+        os.makedirs(b_dir)
+        with open(os.path.join(a_dir, "module.json"), "w") as f:
+            f.write('{"name":"a","version":"1.0.0"}')
+        with open(os.path.join(b_dir, "module.json"), "w") as f:
+            f.write('{"name":"b","version":"1.0.0"}')
+        with open(os.path.join(a_dir, "a.v"), "wb") as f:
+            f.write(b'b\x00c.v\x00d')
+        with open(os.path.join(b_dir, "a.v"), "wb") as f:
+            f.write(b'b')
+        with open(os.path.join(b_dir, "c.v"), "wb") as f:
+            f.write(b'd')
+        self.assertNotEqual(fetch.module_hash(a_dir), fetch.module_hash(b_dir))
 
 
 if __name__ == "__main__":

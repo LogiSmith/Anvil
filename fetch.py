@@ -70,11 +70,13 @@ def hashed_files(mod_dir):
 
 def module_hash(mod_dir):
     # SHA-256 over the module's source, independent of where it sits.
+    # Each file hashes to a fixed 32-byte digest; no ambiguity between file content and separators.
     h = hashlib.sha256()
     for rel in hashed_files(mod_dir):
-        h.update(rel.encode("utf-8") + b"\0")
+        h.update(hashlib.sha256(rel.encode("utf-8")).digest())
+        file_hash = hashlib.sha256()
         with open(os.path.join(mod_dir, rel), "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-        h.update(b"\0")
+                file_hash.update(chunk)
+        h.update(file_hash.digest())
     return "sha256:" + h.hexdigest()
