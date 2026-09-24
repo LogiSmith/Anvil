@@ -1,5 +1,5 @@
-import contextlib, functools, http.server, io, os, socketserver
-import shutil, sys, tempfile, threading, unittest
+import contextlib, io, os
+import shutil, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fetch                                                    # noqa: E402
@@ -11,19 +11,6 @@ def capture():
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         yield buf
-
-@contextlib.contextmanager
-def serve(directory):
-    """A throwaway HTTP server over `directory`, yielding its base URL."""
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler,
-                                directory=directory)
-    srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    try:
-        yield f"http://127.0.0.1:{srv.server_address[1]}"
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 class TempCase(unittest.TestCase):
     """A TestCase with a scratch directory and a restored working directory."""
@@ -76,6 +63,37 @@ class TestEvalArith(unittest.TestCase):
             fetch.eval_arith("1 << 1000000000", {})
         with self.assertRaises(ValueError):
             fetch.eval_arith("2 ** 64", {})       # ** is not in the allowed set at all
+
+    def test_rejects_long_operator_chain(self):
+        # A flat chain of allowed operators parses as a deeply nested BinOp
+        # tree; without a node-count bound this blows the recursion stack
+        # instead of raising ValueError.
+        with self.assertRaises(ValueError):
+            fetch.eval_arith("+".join(["1"] * 1000), {})
+
+
+class TestEvalDefsyms(TempCase):
+    """anvil.eval_defsyms must turn a bad expression into a clean exit via
+    fail(), never a raised exception or a raw traceback -- including for the
+    long-chain input that used to escape eval_arith as a RecursionError."""
+
+    def test_bad_expression_reports_via_fail_and_exits(self):
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.eval_defsyms({"bad": "nope + 1"}, {})
+        text = out.getvalue()
+        self.assertIn("bad", text)
+        self.assertIn("nope + 1", text)
+        self.assertIn("nope", text)
+
+    def test_long_operator_chain_reports_via_fail_and_exits(self):
+        expr = "+".join(["1"] * 1000)
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.eval_defsyms({"huge": expr}, {})
+        text = out.getvalue()
+        self.assertIn("huge", text)
+        self.assertIn("too large", text)
 
 
 if __name__ == "__main__":

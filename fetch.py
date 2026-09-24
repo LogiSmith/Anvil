@@ -8,6 +8,8 @@ import ast
 import operator
 
 MAX_SHIFT = 64          # a shift past this is a memory bomb, not a build parameter
+MAX_NODES = 200         # bounds recursion depth: a flat operator chain this long
+                         # is not a build parameter, it is a stack overflow
 
 _BINOPS = {
     ast.Add: operator.add,   ast.Sub: operator.sub,   ast.Mult: operator.mul,
@@ -29,6 +31,16 @@ def eval_arith(expr, names):
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
         raise ValueError(f"not a valid expression: {e.msg}")
+
+    # A flat chain like "1+1+1+...+1" parses as a deeply left-nested BinOp
+    # tree, and walk() recurses once per level -- without this check that is
+    # an uncaught RecursionError rather than a clean rejection. Counting
+    # nodes up front (not the interpreter's recursion limit, which varies)
+    # keeps the failure predictable. Deep parenthesisation is already
+    # rejected by CPython's own parser as a SyntaxError above.
+    node_count = sum(1 for _ in ast.walk(tree))
+    if node_count > MAX_NODES:
+        raise ValueError(f"expression is too large ({node_count} nodes, max {MAX_NODES})")
 
     def walk(node):
         if isinstance(node, ast.Expression):
