@@ -37,6 +37,7 @@ Commands:
 import subprocess
 import sys
 import os
+import re
 import shutil
 import json
 import time
@@ -444,7 +445,152 @@ def run(cmd, shell=True, check=True):
         sys.exit(1)
     return result
 
-def conda_run(cmd):
+# ─── Output formatting ────────────────────────────────────────────────────────
+# Colour only on a real terminal: piping to a file, or running under the
+# toolchain installer, must stay free of escape codes.
+_COLOR = (sys.stdout.isatty()
+          and not os.environ.get("NO_COLOR")
+          and os.environ.get("TERM") != "dumb")
+
+def _paint(code, s):
+    return f"\033[{code}m{s}\033[0m" if _COLOR else s
+
+def green(s):  return _paint("32", s)
+def yellow(s): return _paint("33", s)
+def red(s):    return _paint("31", s)
+
+# file.ext:line  -- the shape yosys, VPR and gcc all use to point at source.
+_SRC_REF = re.compile(r"([^\s:()'\"]+\.(?:sv|v|xdc|cpp|cc|c|hpp|h|S|ld)):(\d+)")
+
+def project_refs(line, root):
+    """Source references in `line` that point inside the project.
+
+    Everything else -- yosys' own cells_map.v, VPR's C++ sources, the conda
+    env -- belongs to the toolchain and is noise the user cannot act on.
+    """
+    refs = []
+    for m in _SRC_REF.finditer(line):
+        path = os.path.expanduser(m.group(1))
+        full = os.path.abspath(path if os.path.isabs(path) else os.path.join(root, path))
+        if full == root or full.startswith(root + os.sep):
+            refs.append(f"{os.path.relpath(full, root)}:{m.group(2)}")
+    return refs
+
+def shorten(line, root):
+    """Drop the project prefix so paths read as the user typed them."""
+    return line.replace(root + os.sep, "")
+
+def own_warnings(lines, root):
+    """Warning lines that name a file inside the project, deduplicated."""
+    seen, out = set(), []
+    for line in lines:
+        s = line.strip()
+        if "warning:" not in s.lower():
+            continue
+        if not project_refs(s, root):
+            continue
+        s = shorten(s, root)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+def error_lines(lines):
+    """Lines that look like the actual failure, newest-last, deduplicated.
+
+    `make: *** [...] Error 1` is deliberately skipped: it only says which
+    recipe died, which the stage name already tells the user, and it would
+    crowd out the message that explains why. If a run produces nothing but
+    that line, the caller's tail dump still shows it.
+    """
+    seen, out = set(), []
+    for line in lines:
+        s = line.strip()
+        low = s.lower()
+        if s.startswith("make:") or "***" in s:
+            continue
+        hit = (low.startswith("error") or "error:" in low
+               or re.match(r"^\w*(Error|Exception):", s))
+        if hit and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+# Known failure signatures -> a short note on what the toolchain could not do,
+# plus the file worth opening. These are HINTS, not diagnoses: the same symptom
+# can have several causes, so the raw error is always printed alongside. Add a
+# row whenever a new failure is understood well enough to name a file.
+FAILURE_HINTS = [
+    (("create_ioplace", "empty sequence"),
+     "no pin constraints came out of the XDC",
+     "check {xdc}: each port needs a PACKAGE_PIN line, and the port names "
+     "there must match the ones in the design"),
+    (("Unsupported board type",),
+     "the Makefile's TARGET is not in boards.json",
+     "check \"target\" in config.json, then re-run -- `anvil boards` lists the valid ones"),
+]
+
+def failure_hint(lines, config=None):
+    blob = "\n".join(lines)
+    for needles, what, fix in FAILURE_HINTS:
+        if all(n in blob for n in needles):
+            xdc = (config or {}).get("xdc", "the project XDC")
+            return what, fix.format(xdc=xdc)
+    return None, None
+
+def run_logged(cmd, log_path, verbose=False, on_line=None):
+    """Run `cmd`, tee every line to `log_path`, and return (rc, lines).
+
+    Quiet by default -- `on_line` gets each line so the caller can report
+    progress. With verbose=True the raw output is echoed through untouched.
+    """
+    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+    lines = []
+    proc = subprocess.Popen(
+        cmd, shell=isinstance(cmd, str), text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+    )
+    with open(log_path, "w") as log:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            lines.append(line)
+            log.write(line + "\n")
+            if verbose:
+                print(line)
+            elif on_line:
+                on_line(line)
+    proc.stdout.close()
+    return proc.wait(), lines
+
+def report(rc, lines, log_path, root, stage=None, config=None, what="Build"):
+    """Print the warning/error summary. Returns True when the run succeeded."""
+    # A symbol, not the word: the tool's own line already says "warning:".
+    for w in own_warnings(lines, root):
+        print(yellow(f"  ⚠ {w}"))
+
+    if rc == 0:
+        return True
+
+    label = f"{stage} failed" if stage else f"{what} failed"
+    print(red(f"\n✗ {label}"))
+
+    errs = error_lines(lines)
+    for e in errs[-6:]:
+        print(red(f"    {shorten(e, root)}"))
+    if not errs:                      # nothing matched -- never hide the failure
+        for line in [l for l in lines if l.strip()][-15:]:
+            print(f"    {shorten(line, root)}")
+
+    what_, fix = failure_hint(lines, config)
+    if what_:
+        print(yellow(f"  possible cause: {what_}"))
+        print(yellow(f"    {fix}"))
+
+    print(f"  full log: {os.path.relpath(log_path, root)}")
+    return False
+
+def conda_cmd(cmd):
+    """Wrap `cmd` so it runs inside the activated F4PGA conda environment."""
     full = (
         f"source {CONDA_SH} && "
         f"conda activate {CONDA_ENV} && "
@@ -452,7 +598,10 @@ def conda_run(cmd):
         f"export FPGA_FAM={FPGA_FAM} && "
         f"{cmd}"
     )
-    run(f"bash -c '{full}'")
+    return f"bash -c '{full}'"
+
+def conda_run(cmd):
+    run(conda_cmd(cmd))
 
 def find_bitstream(target):
     build = os.path.join(os.getcwd(), BUILD_DIR, target)
@@ -852,9 +1001,11 @@ def cmd_compile(args):
         cmd += [f"-Wl,--defsym={name}={val}"]
     cmd += ["-o", elf_out]
 
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        print("[ERROR] Firmware compilation failed")
+    root     = os.getcwd()
+    log_path = os.path.join(root, BUILD_FW_DIR, "compile.log")
+    rc, lines = run_logged(cmd, log_path,
+                           verbose="--verbose" in args or "-v" in args)
+    if not report(rc, lines, log_path, root, what="Firmware compilation"):
         sys.exit(1)
 
     subprocess.run([cpu["objcopy"], "-O", "verilog", elf_out, mem_out], check=True)
@@ -885,16 +1036,49 @@ def cmd_synth(args):
     if config.get("modules"):
         print(f"[Anvil] Modules: {', '.join(config['modules'])}")
 
+    root     = os.getcwd()
+    verbose  = "--verbose" in args or "-v" in args
+    log_path = os.path.join(root, BUILD_DIR, target, "synth.log")
+
+    # The make recipes echo each stage's command; that is what marks progress.
+    stage_of = {
+        "symbiflow_synth":           "synth",
+        "symbiflow_pack":            "pack",
+        "symbiflow_place":           "place",
+        "symbiflow_route":           "route",
+        "symbiflow_write_fasm":      "fasm",
+        "symbiflow_write_bitstream": "bitstream",
+    }
+    state = {"stage": None}
+
+    def watch(line):
+        for marker, name in stage_of.items():
+            if marker in line and state["stage"] != name:
+                if state["stage"]:
+                    print(green("ok"))
+                print(f"  {name:<10}", end="", flush=True)
+                state["stage"] = name
+                break
+
     t0 = time.time()
-    conda_run(f"cd {os.getcwd()} && TARGET={target} make")
+    rc, lines = run_logged(
+        conda_cmd(f"cd {root} && TARGET={target} make"),
+        log_path, verbose=verbose, on_line=watch,
+    )
     elapsed = time.time() - t0
 
-    bit = find_bitstream(target)
-    if bit:
-        print(f"[Anvil] Done in {elapsed:.1f}s -- {bit}")
-    else:
-        print("[ERROR] No .bit file produced")
+    if not verbose and state["stage"]:
+        print(red("failed") if rc != 0 else green("ok"))
+
+    if not report(rc, lines, log_path, root, stage=state["stage"], config=config):
         sys.exit(1)
+
+    bit = find_bitstream(target)
+    if not bit:
+        print(red("\n✗ no .bit file produced"))
+        print(f"  full log: {os.path.relpath(log_path, root)}")
+        sys.exit(1)
+    print(green(f"\n✓ Done in {elapsed:.1f}s -- {os.path.relpath(bit, root)}"))
 
 def cmd_build(args):
     cmd_compile(args)
@@ -1235,6 +1419,10 @@ def usage():
     print()
     for name, (_, desc) in COMMANDS.items():
         print(f"  {name:<14} {desc}")
+    print()
+    print("  compile/synth/build/rebuild report only warnings and errors from your")
+    print("  own files; the full tool output is kept in build/. Pass --verbose (-v)")
+    print("  to stream it instead.")
 
 def main():
     args = sys.argv[1:]
