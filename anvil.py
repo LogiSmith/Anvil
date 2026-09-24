@@ -94,11 +94,55 @@ def load_config():
         print(f"        Available: {', '.join(boards.keys())}")
         sys.exit(1)
     with open(CONFIG_FILE) as f:
-        return json.load(f)
+        cfg = json.load(f)
+    cfg, changed = migrate_config(cfg)
+    if changed:
+        save_config(cfg)
+        print(f"[Anvil] config.json migrated to schema {SCHEMA}")
+    return cfg
 
 def save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+SCHEMA = "2.0"
+
+def module_entry(version, source, path, digest):
+    return {"version": version, "source": source, "path": path, "hash": digest}
+
+def bundled_path(key):
+    """A bundled module's location, written without the user's home directory."""
+    return f"$ANVIL_HOME/modules/{key}"
+
+def make_entry(key, mod_dir, meta):
+    """A schema-2 entry for a module already resolved via load_module_meta/resolve_deps."""
+    version = meta.get("version", "1.0.0")
+    if is_path_dep(key):
+        return module_entry(version, key, key, fetch.module_hash(mod_dir))
+    return module_entry(version, "system", bundled_path(key), fetch.module_hash(mod_dir))
+
+def entry_ref(name, entry):
+    """The ref string that resolves `entry` again: its path if local, else name@version."""
+    return entry["path"] if is_path_dep(entry["path"]) else f"{name}@{entry['version']}"
+
+def migrate_config(cfg):
+    """Bring a config up to schema 2.0, returning (config, changed); never fetches -- schema 1 refs are never URLs."""
+    if cfg.get("schema") == SCHEMA:
+        return cfg, False
+
+    out = dict(cfg)
+    out["schema"] = SCHEMA
+    out.setdefault("version", "1.0.0")
+
+    mods = {}
+    for ref in cfg.get("modules", []) or []:
+        try:
+            meta, mod_dir, key = load_module_meta(ref, base_dir=os.getcwd())
+        except SystemExit:
+            fail(f"config.json migration failed -- module '{ref}' could not be resolved")
+        mods[meta["name"]] = make_entry(key, mod_dir, meta)
+    out["modules"] = mods
+    return out, True
 
 def get_examples_for_board(board_name):
     board_dir = os.path.join(EXAMPLES_DIR, board_name)
@@ -205,8 +249,8 @@ def resolve_deps(dep, registry, resolved=None, seen=None, base_dir=None):
 def get_resolved_modules(config):
     registry = load_modules_registry()
     resolved = []
-    for mod in config.get("modules", []):
-        resolve_deps(mod, registry, resolved, base_dir=os.getcwd())
+    for name, entry in config.get("modules", {}).items():
+        resolve_deps(entry_ref(name, entry), registry, resolved, base_dir=os.getcwd())
     return resolved
 
 def find_soc_module(resolved_modules):
@@ -799,10 +843,10 @@ def cmd_init(args):
         config = {
             "project": name,
             "board":   board_name,
-            "modules": [],
             "params":  {},
             **board
         }
+    config, _ = migrate_config(config)
     save_config(config)
 
     xdc_src = os.path.join(XDC_DIR, xdc)
@@ -890,24 +934,26 @@ def cmd_addmodule(args):
 
     registry = load_modules_registry()
     config   = load_config()
-    current  = config.get("modules", [])
+    current  = config.get("modules", {})
 
-    to_add = []
+    to_add, added_keys = {}, []
     for mod in args:
         chain = resolve_deps(mod, registry, base_dir=os.getcwd())
         for (key, mod_dir, meta) in chain:
-            if key not in current and key not in to_add:
-                to_add.append(key)
+            name = meta["name"]
+            if name not in current and name not in to_add:
+                to_add[name] = make_entry(key, mod_dir, meta)
+                added_keys.append(key)
 
     if not to_add:
         print("[Anvil] All requested modules already present.")
         return
 
     print(f"[Anvil] Resolving dependencies...")
-    for key in to_add:
+    for key in added_keys:
         print(f"  + {key}")
 
-    config["modules"] = current + to_add
+    config["modules"] = {**current, **to_add}
     save_config(config)
 
     resolved = get_resolved_modules(config)
@@ -935,28 +981,29 @@ def cmd_removemodule(args):
         sys.exit(1)
 
     config  = load_config()
-    current = config.get("modules", [])
+    current = config.get("modules", {})
 
-    to_remove_names = set()
+    to_remove = set()
     for a in args:
-        name, _ = parse_module_ref(a)
-        to_remove_names.add(name)
-
-    to_remove = set(args) | {m for m in current if parse_module_ref(m)[0] in to_remove_names}
+        if is_path_dep(a):
+            meta, _, _ = load_module_meta(a, base_dir=os.getcwd())
+            to_remove.add(meta["name"])
+        else:
+            to_remove.add(parse_module_ref(a)[0])
 
     registry = load_modules_registry()
-    for mod in current:
-        if mod in to_remove:
+    for name, entry in current.items():
+        if name in to_remove:
             continue
-        meta, _, _ = load_module_meta(mod)
+        meta, _, _ = load_module_meta(entry_ref(name, entry))
         for dep in meta.get("depends", []):
-            dep_key = resolve_deps(dep, registry, base_dir=os.getcwd())[0][0]
-            if dep_key in to_remove:
-                print(f"[ERROR] Cannot remove '{dep_key}' -- '{mod}' depends on it.")
+            _, _, dep_meta = resolve_deps(dep, registry, base_dir=os.getcwd())[0]
+            if dep_meta["name"] in to_remove:
+                print(f"[ERROR] Cannot remove '{dep_meta['name']}' -- '{name}' depends on it.")
                 sys.exit(1)
 
-    removed = [m for m in current if m in to_remove]
-    config["modules"] = [m for m in current if m not in to_remove]
+    removed = [n for n in current if n in to_remove]
+    config["modules"] = {n: e for n, e in current.items() if n not in to_remove}
     save_config(config)
     build_makefile(config)
     print(f"[Anvil] Removed: {', '.join(removed)}")
@@ -966,12 +1013,12 @@ def cmd_modules(args):
 
     if os.path.exists(CONFIG_FILE):
         config  = load_config()
-        current = config.get("modules", [])
+        current = config.get("modules", {})
         print(f"[Anvil] Modules in '{config['project']}':")
         if current:
-            for m in current:
-                meta, _, _ = load_module_meta(m)
-                print(f"  + {m:<25} {meta.get('description', '')}")
+            for name, entry in current.items():
+                meta, _, _ = load_module_meta(entry_ref(name, entry))
+                print(f"  + {name:<25} {meta.get('description', '')}")
         else:
             print("  (none)")
         print()
@@ -982,7 +1029,7 @@ def cmd_modules(args):
         key        = f"{name}@{ver}"
         meta, mod_dir, _ = load_module_meta(key)
         is_soc     = "[SOC]" if os.path.exists(os.path.join(mod_dir, "soc.json")) else "     "
-        in_proj    = "+" if os.path.exists(CONFIG_FILE) and key in load_config().get("modules", []) else " "
+        in_proj    = "+" if os.path.exists(CONFIG_FILE) and name in load_config().get("modules", {}) else " "
         print(f"  [{in_proj}] {is_soc} {key:<30} {info['description']}")
 
 def cmd_installmodule(args):
@@ -1317,7 +1364,7 @@ def cmd_status(args):
 
     config = load_config()
     bit = find_bitstream(config["target"])
-    mods = config.get("modules", [])
+    mods = config.get("modules", {})
 
     resolved = get_resolved_modules(config)
     soc_dir, soc_cfg, soc_key = find_soc_module(resolved)

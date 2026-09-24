@@ -1,4 +1,4 @@
-import contextlib, functools, http.server, io, os, socket
+import contextlib, functools, http.server, io, json, os, socket
 import shutil, socketserver, struct, sys, tarfile, tempfile, threading, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -566,6 +566,128 @@ class TestDownloadArchiveChunkedWithStrayContentLength(TempCase):
         finally:
             srv.shutdown()
             srv.server_close()
+
+
+def _make_local_module(base, name="local-mod", version="1.0.0"):
+    d = os.path.join(base, name)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "module.json"), "w") as f:
+        json.dump({"name": name, "version": version}, f)
+    with open(os.path.join(d, "top.v"), "w") as f:
+        f.write("module m; endmodule\n")
+    return d
+
+
+class TestMigrateConfig(TempCase):
+    def test_migrates_a_schema_1_config(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        _make_local_module(self.tmp, "local-mod")
+        os.chdir(proj)
+
+        old = {"project": "p", "board": "Nexys-A7-50T",
+               "modules": ["uart@1.0.0", "../local-mod"]}
+        new, changed = anvil.migrate_config(old)
+        self.assertTrue(changed)
+        self.assertEqual(new["schema"], "2.0")
+        self.assertEqual(new["version"], "1.0.0")
+        self.assertIsInstance(new["modules"], dict)
+        self.assertEqual(new["modules"]["uart"]["source"], "system")
+        self.assertTrue(new["modules"]["uart"]["path"].startswith("$ANVIL_HOME/modules/uart@"))
+        self.assertEqual(new["modules"]["local-mod"]["source"], "../local-mod")
+        self.assertEqual(new["modules"]["local-mod"]["path"], "../local-mod")
+
+    def test_migration_is_idempotent(self):
+        old = {"project": "p", "modules": ["uart@1.0.0"]}
+        once, _ = anvil.migrate_config(old)
+        twice, changed = anvil.migrate_config(once)
+        self.assertFalse(changed)
+        self.assertEqual(twice, once)
+
+    def test_schema_2_config_is_left_alone(self):
+        cfg = {"schema": "2.0", "project": "p", "version": "1.0.0", "modules": {}}
+        out, changed = anvil.migrate_config(cfg)
+        self.assertFalse(changed)
+        self.assertEqual(out, cfg)
+
+    def test_no_home_path_is_recorded(self):
+        old = {"project": "p", "modules": ["uart@1.0.0"]}
+        new, _ = anvil.migrate_config(old)
+        self.assertNotIn(os.path.expanduser("~"), json.dumps(new))
+
+    def test_migration_says_which_module_it_cannot_find(self):
+        # An old project may name a bundled module no longer in the registry --
+        # resolve_version exits the process; migration must explain itself.
+        old = {"project": "p", "modules": ["module-that-was-removed@1.0.0"]}
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.migrate_config(old)
+        text = out.getvalue()
+        self.assertIn("module-that-was-removed", text)
+        self.assertTrue("config.json" in text or "migrat" in text.lower())
+
+
+class TestModulesSchemaIntegration(TempCase):
+    """Every reader of config['modules'] must work against the schema-2 dict shape."""
+
+    def test_load_config_migrates_in_place_with_one_notice(self):
+        os.chdir(self.tmp)
+        with open("config.json", "w") as f:
+            json.dump({"project": "p", "board": "Nexys-A7-50T",
+                       "target": "nexys_a7_50t", "modules": ["uart@1.0.0"]}, f)
+
+        with capture() as out:
+            cfg = anvil.load_config()
+        self.assertEqual(out.getvalue().count("migrated"), 1)
+        self.assertEqual(cfg["schema"], "2.0")
+        self.assertIsInstance(cfg["modules"], dict)
+
+        with open("config.json") as f:
+            on_disk = json.load(f)
+        self.assertEqual(on_disk["schema"], "2.0")
+
+        with capture() as out2:
+            anvil.load_config()
+        self.assertNotIn("migrated", out2.getvalue())
+
+    def test_get_resolved_modules_reads_schema_2_dict(self):
+        entry = anvil.module_entry("1.0.0", "system", anvil.bundled_path("uart@1.0.0"), "sha256:x")
+        resolved = anvil.get_resolved_modules({"modules": {"uart": entry}})
+        self.assertIn("uart@1.0.0", [k for k, _, _ in resolved])
+
+    def test_addmodule_and_removemodule_use_schema_2_dict(self):
+        # config.json is saved before build_makefile's sv2v step, which this
+        # sandbox has no toolchain for; a SystemExit there is not what's under test.
+        os.chdir(self.tmp)
+        with open("config.json", "w") as f:
+            json.dump({"schema": "2.0", "project": "p", "version": "1.0.0",
+                       "board": "Nexys-A7-50T", "target": "nexys_a7_50t",
+                       "xdc": "x.xdc", "modules": {}}, f)
+
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_addmodule(["uart"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertIn("uart", cfg["modules"])
+        self.assertEqual(cfg["modules"]["uart"]["source"], "system")
+        self.assertTrue(cfg["modules"]["uart"]["hash"].startswith("sha256:"))
+
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_removemodule(["uart"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertNotIn("uart", cfg["modules"])
+
+    def test_cmd_init_scaffolds_schema_2_config(self):
+        os.chdir(self.tmp)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_init(["--board", "Nexys-A7-50T", "--example", "uart-hello"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["schema"], "2.0")
+        self.assertIsInstance(cfg["modules"], dict)
+        self.assertIn("uart", cfg["modules"])
+        self.assertNotIn(os.path.expanduser("~"), json.dumps(cfg))
 
 
 if __name__ == "__main__":
