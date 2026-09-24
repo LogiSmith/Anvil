@@ -1576,5 +1576,77 @@ class TestTransitiveExternalDependency(TempCase):
         self.assertTrue(any(s.endswith("picorv32.v") for s in sources), sources)
 
 
+class TestDependencyClosureConsistency(TempCase):
+    """resolve_deps skips a URL depends entry on trust; get_resolved_modules must verify that trust."""
+
+    def _serve_fifo_axi(self, base_url):
+        axi_url = f"{base_url}/axi.tar.gz"
+        _tar_with(self.tmp, [
+            ("pkg/module.json", _mod_meta("fifo", "1.0.0", depends=[axi_url])),
+            ("pkg/top.v", b"module fifo; endmodule"),
+        ], name="fifo.tar.gz")
+        _tar_with(self.tmp, [
+            ("pkg/module.json", _mod_meta("axi", "1.0.0")),
+            ("pkg/top.v", b"module axi; endmodule"),
+        ], name="axi.tar.gz")
+
+    def test_dependency_missing_from_config_fails_naming_both(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo_axi(base_url)
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+        axi_url = cfg["modules"]["axi"]["source"]
+        del cfg["modules"]["axi"]
+        with open("config.json", "w") as f:
+            json.dump(cfg, f)
+        with open("config.json") as f:
+            cfg = json.load(f)
+
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.get_resolved_modules(cfg)
+        text = out.getvalue()
+        self.assertIn("fifo", text)
+        self.assertIn(axi_url, text)
+
+    def test_healthy_two_level_chain_is_silent_and_returns_both_sources(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo_axi(base_url)
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+
+        with capture() as out:
+            sources = anvil.collect_sources(config=cfg)
+        self.assertEqual(out.getvalue(), "")
+        self.assertTrue(any(s.endswith(os.path.join("fifo@1.0.0", "top.v")) for s in sources), sources)
+        self.assertTrue(any(s.endswith(os.path.join("axi@1.0.0", "top.v")) for s in sources), sources)
+
+    def test_bundled_only_project_is_unaffected(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        os.chdir(proj)
+        with open("config.json", "w") as f:
+            json.dump({"schema": "2.0", "project": "p", "version": "1.0.0",
+                       "board": "Nexys-A7-50T", "target": "nexys_a7_50t",
+                       "xdc": "x.xdc", "modules": {}}, f)
+        with capture():
+            anvil.cmd_addmodule(["picorv32"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+
+        with capture() as out:
+            resolved = anvil.get_resolved_modules(cfg)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("picorv32@1.0.0", [k for k, _, _ in resolved])
+
+
 if __name__ == "__main__":
     unittest.main()

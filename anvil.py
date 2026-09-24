@@ -393,10 +393,22 @@ def resolve_deps(dep, registry, resolved=None, seen=None, base_dir=None):
 
 def get_resolved_modules(config):
     registry = load_modules_registry()
+    modules  = config.get("modules", {})
     resolved = []
-    for name, entry in config.get("modules", {}).items():
+    for name, entry in modules.items():
         resolve_deps(entry_ref(name, entry), registry, resolved, base_dir=os.getcwd())
+    check_url_deps_are_recorded(resolved, modules)
     return resolved
+
+def check_url_deps_are_recorded(resolved, modules):
+    """resolve_deps trusts a URL depends entry is already its own entry -- this is where that trust is checked."""
+    sources = [e.get("source") for e in modules.values()]
+    for _, _, meta in resolved:
+        for dep in meta.get("depends", []):
+            # candidates, not == -- a shorthand ref won't match the resolved URL plan_external recorded verbatim
+            if fetch.classify(dep) == "url" and not any(c in sources for c in fetch.archive_candidates(dep)):
+                fail(f"module '{meta['name']}' depends on '{dep}', which is not in this project",
+                     "config.json and this module's own dependencies disagree")
 
 def find_soc_module(resolved_modules):
     """A module is a SoC if it contains soc.json. Returns (mod_dir, soc_cfg, key) or (None, None, None)."""
