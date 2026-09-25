@@ -2367,8 +2367,7 @@ class TestRemoveModuleDeletesFetchedDirectory(TempCase):
         bundled_dir = os.path.join(anvil.MODULES_DIR, "uart@1.0.0")
         self.assertTrue(os.path.isdir(bundled_dir))
 
-        # config.json is saved before build_makefile's sv2v step, which this sandbox has no
-        # toolchain for; a SystemExit there is not what's under test (see TestModulesSchemaIntegration)
+        # this sandbox has no sv2v toolchain; a SystemExit from build_makefile is not under test here (see TestModulesSchemaIntegration)
         with capture(), contextlib.suppress(SystemExit):
             anvil.cmd_removemodule(["uart"])
 
@@ -2434,8 +2433,7 @@ class TestRemoveModuleDeletesFetchedDirectory(TempCase):
         self.assertNotIn("axi", cfg2["modules"])
 
     def test_two_entries_sharing_a_directory_the_survivor_keeps_it(self):
-        # a corrupted-by-hand config, not something anvil itself would produce --
-        # deleting must still never orphan a module that is staying
+        # a corrupted-by-hand config -- deleting must still never orphan a module that is staying
         proj = _scaffold_project(self.tmp)
         os.chdir(proj)
         shared = os.path.join("external", "shared@1.0.0")

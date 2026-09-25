@@ -276,13 +276,7 @@ def external_module_path(entry, base):
     return os.path.realpath(os.path.join(base, path)) if path else None
 
 def delete_fetched_directory(name, entry, base, keep):
-    """Delete a removed module's own directory, only if it resolves inside external/.
-
-    Never external/ itself, never a local-path or bundled module's directory -- neither resolves
-    inside it -- and never a directory another surviving entry (`keep`) still points at. A failed
-    delete is a warning: the entry is already out of config.json, so a stale directory is
-    recoverable, but aborting the whole removal here would not be.
-    """
+    """Delete only if it resolves inside external/ and isn't shared with a surviving entry -- a failed delete just warns, since config.json is already saved."""
     ext_root = os.path.realpath(os.path.join(base, EXTERNAL_DIR))
     mod_dir  = external_module_path(entry, base)
     if mod_dir is None or mod_dir == ext_root or mod_dir in keep:
@@ -1226,9 +1220,7 @@ def cmd_addmodule(args):
         if kind == "url":
             external_refs.append(ref)
         elif kind == "path" and not is_path_dep(ref):
-            # is_path_dep only recognizes ./ and ../, deliberately, for module.json's depends
-            # convention -- alias a CLI argument that is absolute or ~ into that shape just to
-            # reuse resolve_deps, then restore the literal ref the user typed below
+            # is_path_dep deliberately stays narrow to ./ and ../ for module.json's depends convention -- alias here only to reuse resolve_deps, then restore the literal ref below
             alias = os.path.relpath(os.path.expanduser(ref), os.getcwd())
             if not alias.startswith(".."):
                 alias = os.path.join(".", alias)
