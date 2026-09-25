@@ -59,12 +59,16 @@ local path or a URL. See [Module sources](#module-sources) next.
 A module reference is one of three things, told apart by the shape of the
 string itself — Anvil never needs to be told which kind it's looking at:
 
-1. **A local path** — starts with `./` or `../`. Used in place; nothing is
-   downloaded or copied.
+1. **A local path** — starts with `./`, `../`, `/`, or `~`. Used in place;
+   nothing is downloaded or copied.
 
    ```bash
    anvil addmodule ../scratch-module
    ```
+
+   An absolute or `~` path is recorded in `source` exactly as typed, but
+   `path` is always a `./`/`../`-relative alias resolvable from the project
+   root — see [Modules](file-formats.md#modules) for a worked example.
 
 2. **A bundled name** — anything else that isn't a URL; resolves against
    `modules.json` as in [Registry & versioning](#registry-versioning) above.
@@ -247,10 +251,21 @@ anvil removemodule uart          # remove (refuses if another module depends on 
 `firmware/` template and sets a default `params.ram_addr_bits`.
 
 `removemodule` refuses to drop a module that another kept module still depends
-on, to avoid leaving the project unbuildable. It only edits `config.json`,
-though — the module's own directory (`external/<name>@<version>/`, or
-`modules/<name>@<version>/` for a bundled one) is left on disk; delete it by
-hand if you want the space back.
+on, to avoid leaving the project unbuildable. For a fetched module it also
+deletes that module's own directory under `external/`:
+
+```
+[Anvil] Removed directory: external/fifo@1.2.0
+[Anvil] Removed: fifo
+```
+
+A bundled module's directory (shared by every project, under the Anvil
+installation) and a local-path module's directory (the user's own, outside
+`external/`) are never touched — only a directory that actually resolves
+inside `external/` is ever deleted, and never one another surviving entry
+still points at. A failed delete — a permissions issue, say — is only a
+`[WARN]`, since `config.json` is already saved without that entry; a leftover
+directory is harmless and can be removed by hand.
 
 ### Consent before installing an external module
 

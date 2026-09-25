@@ -36,12 +36,27 @@ longer meaningful; build order comes from dependency resolution (see
 |-------|---------|
 | `version` | Taken from the module's own `module.json` |
 | `source` | `"system"` for a module bundled with Anvil, a local path exactly as the user typed it, or the fully **resolved** archive URL for a fetched module |
-| `path` | Where the code actually is: `$ANVIL_HOME/…` for a bundled module, `external/…` for a fetched one, the path itself for a local one |
+| `path` | Where the code actually is: `$ANVIL_HOME/…` for a bundled module, `external/…` for a fetched one, a `./`/`../`-relative alias for a local one — see below |
 | `hash` | Content hash covering the module's `.v`/`.sv` files, `module.json` and `soc.json` — see [What the hash does not prove](modules.md#what-the-hash-does-not-prove) |
 
 `$ANVIL_HOME` is the same placeholder `build_makefile` already writes into the
 Makefile, so no user's home directory ends up in a file that gets shared or
 committed.
+
+For a local module, `path` is usually identical to `source` — both hold
+whatever the user typed. They diverge when that ref was absolute or `~`:
+`source` keeps the literal string, while `path` is always resolvable from the
+project root. Adding `/tmp/anvildoc/rtl/fifo` from a project at
+`/tmp/anvildoc/work/blinky` records:
+
+```json
+"fifo": {
+  "version": "0.3.0",
+  "source": "/tmp/anvildoc/rtl/fifo",
+  "path": "../../rtl/fifo",
+  "hash": "sha256:587407475bf6cdf05fa5a0538e1db1a3bbbb2be16acb6aa8f4bd2ef568482ebe"
+}
+```
 
 ```json
 {
@@ -114,7 +129,7 @@ One per module directory (`modules/<name>@<version>/`). Created by
 | `name` | string | yes | Module name (matches the `<name>` in `<name>@<version>/`) |
 | `description` | string | yes | One-line summary (shown by `anvil modules`) |
 | `version` | string | no | Defaults to `1.0.0`; matches `<version>` in the dir name |
-| `depends` | string[] | no | Module refs this module needs — resolved recursively. May be a bundled name (`apb`), a path dep (`./`, `../`), or a URL — the same three forms a project's own `modules` can use, see [Module sources](modules.md#module-sources) |
+| `depends` | string[] | no | Module refs this module needs — resolved recursively. May be a bundled name (`apb`), a path dep starting `./` or `../` (unlike `anvil addmodule`, an absolute or `~` path here is not resolved — see [Module sources](modules.md#module-sources)), or a URL |
 
 ```json
 {
