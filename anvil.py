@@ -1445,6 +1445,7 @@ def cmd_installmodule(args):
 def cmd_compile(args):
     """Build firmware: C++ -> ELF -> mem -> ram.v"""
     config   = load_config()
+    ensure_modules(config)   # external/ is git-ignored, and soc.json here picks the compiler -- both must be verified before use
     resolved = get_resolved_modules(config)
     soc_dir, soc_cfg, soc_key = find_soc_module(resolved)
 

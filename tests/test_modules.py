@@ -2486,5 +2486,75 @@ class TestRemoveModuleDeletesFetchedDirectory(TempCase):
             self.assertNotIn("evil", json.load(f)["modules"])
 
 
+class TestEnsureModulesViaCmdBuild(TempCase):
+    """anvil build is compile+synth; only synth called ensure_modules, so build alone broke a fresh clone."""
+
+    def test_cmd_build_restores_a_deleted_external_module(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("m", "1.0.0")),
+                ("pkg/top.v", b"module m; endmodule"),
+            ], name="m.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/m.tar.gz"])
+
+            self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "top.v")))
+            shutil.rmtree(anvil.EXTERNAL_DIR)   # simulate a fresh clone: git-ignored, so absent
+
+            # the re-fetch inside cmd_build needs the server still up -- stays in this block
+            with capture() as out:
+                with contextlib.suppress(SystemExit):   # sandbox has no F4PGA toolchain -- expected past this point
+                    anvil.cmd_build([])
+
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "top.v")))
+        self.assertIn("Fetching m", out.getvalue())
+        self.assertNotIn("module.json not found", out.getvalue())
+
+
+class TestCmdCompileRefusesHashMismatch(TempCase):
+    """The hash proves a module's code is unchanged since it was added -- cmd_compile must check it before running anything the module names."""
+
+    def test_tampered_soc_json_compiler_never_runs(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        marker = os.path.join(self.tmp, "marker-ran")
+        fake_cc = os.path.join(self.tmp, "fake-cc.sh")
+        with open(fake_cc, "w") as f:
+            f.write(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+        os.chmod(fake_cc, 0o755)
+
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("soc", "1.0.0")),
+                ("pkg/top.v", b"module soc; endmodule"),
+                ("pkg/soc.json", json.dumps({"cpu": {
+                    "compiler": "gcc", "march": "rv32i",
+                    "mabi": "ilp32", "objcopy": "objcopy",
+                }}).encode()),
+            ], name="soc.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/soc.tar.gz"])
+
+        # tampered after the fact, like a compromised or edited-by-hand module -- hash now disagrees
+        mod_dir = os.path.join(anvil.EXTERNAL_DIR, "soc@1.0.0")
+        with open(os.path.join(mod_dir, "soc.json"), "w") as f:
+            json.dump({"cpu": {"compiler": fake_cc, "march": "rv32i",
+                                "mabi": "ilp32", "objcopy": "objcopy"}}, f)
+        with open("config.json") as f:
+            recorded_hash = json.load(f)["modules"]["soc"]["hash"]
+        self.assertNotEqual(fetch.module_hash(mod_dir), recorded_hash)
+        self.assertTrue(os.path.isdir(anvil.FW_SRC))   # cmd_addmodule scaffolds it for a detected SoC
+
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.cmd_compile([])
+
+        self.assertFalse(os.path.exists(marker))
+        self.assertIn("hash", out.getvalue().lower())
+
+
 if __name__ == "__main__":
     unittest.main()
