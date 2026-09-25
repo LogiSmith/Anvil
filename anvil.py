@@ -982,6 +982,41 @@ TOP_SV_TEMPLATE = '''module top (
 endmodule
 '''
 
+GITIGNORE_TEMPLATE = """build/
+external/
+*.vcd
+*.log
+__pycache__/
+"""
+
+def scaffold_git(root):
+    """git init and a .gitignore, without nesting a repo inside a repo."""
+    try:
+        inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                                 cwd=root, capture_output=True, text=True)
+        if inside.returncode != 0:
+            subprocess.run(["git", "init", "-q"], cwd=root, capture_output=True)
+    except FileNotFoundError:
+        pass                                          # no git on this machine -- .gitignore still helps
+    if not os.path.exists(os.path.join(root, ".gitignore")):
+        with open(os.path.join(root, ".gitignore"), "w") as f:
+            f.write(GITIGNORE_TEMPLATE)
+
+_warned_gitignore = set()
+
+def warn_if_no_gitignore(root):
+    """Say so once per project when there's no .gitignore at all; never parse one that exists."""
+    root = os.path.abspath(root)
+    if os.path.exists(os.path.join(root, ".gitignore")) or root in _warned_gitignore:
+        return
+    _warned_gitignore.add(root)
+    print(yellow("⚠ no .gitignore in this project"))
+    print("  external/ and build/ are generated -- committing them is rarely wanted.")
+    print("  A reasonable starting point:\n")
+    for line in GITIGNORE_TEMPLATE.strip().splitlines():
+        print(f"      {line}")
+    print()
+
 def cmd_init(args):
     if "--module" in args:
         cmd_initmodule(args)
@@ -1012,6 +1047,8 @@ def cmd_init(args):
 
     print(f"[Anvil] Initializing project: {name}")
     print(f"[Anvil] Board: {board_name} -- {board['description']}")
+
+    scaffold_git(os.getcwd())
 
     # Validate example if specified
     if example_name:
@@ -1170,6 +1207,7 @@ def cmd_addmodule(args):
             if not confirm_external(plan, assume_yes):
                 print("[Anvil] Aborted -- nothing installed.")
                 return
+            warn_if_no_gitignore(os.getcwd())
             os.makedirs(EXTERNAL_DIR, exist_ok=True)
             installed = []
             for i, m in enumerate(plan):

@@ -1,5 +1,5 @@
 import contextlib, functools, http.server, io, json, os, socket
-import shutil, socketserver, struct, sys, tarfile, tempfile, threading, unittest, zipfile
+import shutil, socketserver, struct, subprocess, sys, tarfile, tempfile, threading, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fetch                                                    # noqa: E402
@@ -2005,6 +2005,177 @@ class TestMonorepoSubpathRoundTrip(TempCase, StdinCase):
             entry = json.load(f)["modules"]["fifo"]
         self.assertEqual(entry["source"], f"{base_url}/fifo.tar.gz")
         self.assertNotIn("#", entry["source"])
+
+
+class TestScaffoldGit(TempCase):
+    def setUp(self):
+        TempCase.setUp(self)
+        anvil._warned_gitignore.clear()
+
+    def test_creates_git_and_gitignore(self):
+        # tempfile.mkdtemp() lives outside Anvil's own repo -- confirm that rather than assume it
+        outside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                                  cwd=self.tmp, capture_output=True)
+        self.assertNotEqual(outside.returncode, 0)
+        anvil.scaffold_git(self.tmp)
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp, ".git")))
+        with open(os.path.join(self.tmp, ".gitignore")) as f:
+            body = f.read()
+        for line in ["build/", "external/", "*.vcd", "*.log", "__pycache__/"]:
+            self.assertIn(line, body)
+
+    def test_does_not_nest_a_repo(self):
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        inner = os.path.join(self.tmp, "proj")
+        os.makedirs(inner)
+        anvil.scaffold_git(inner)
+        self.assertFalse(os.path.isdir(os.path.join(inner, ".git")))   # outer repo stays in charge
+        self.assertTrue(os.path.isfile(os.path.join(inner, ".gitignore")))
+
+    def test_existing_gitignore_is_not_overwritten(self):
+        with open(os.path.join(self.tmp, ".gitignore"), "w") as f:
+            f.write("mine\n")
+        anvil.scaffold_git(self.tmp)
+        with open(os.path.join(self.tmp, ".gitignore")) as f:
+            self.assertEqual(f.read(), "mine\n")
+
+    def test_missing_git_binary_still_leaves_a_gitignore(self):
+        real_run = anvil.subprocess.run
+        def missing(cmd, *a, **k):
+            if cmd[0] == "git":
+                raise FileNotFoundError("git")
+            return real_run(cmd, *a, **k)
+        anvil.subprocess.run = missing
+        try:
+            anvil.scaffold_git(self.tmp)   # must not raise
+        finally:
+            anvil.subprocess.run = real_run
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, ".git")))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, ".gitignore")))
+
+
+class TestWarnIfNoGitignore(TempCase):
+    def setUp(self):
+        TempCase.setUp(self)
+        anvil._warned_gitignore.clear()
+
+    def test_warns_once_when_no_gitignore(self):
+        with capture() as out:
+            anvil.warn_if_no_gitignore(self.tmp)
+        text = out.getvalue()
+        self.assertIn("no .gitignore", text)
+        self.assertIn("external/", text)
+        with capture() as out2:
+            anvil.warn_if_no_gitignore(self.tmp)
+        self.assertEqual(out2.getvalue(), "")   # warned once, not every time
+
+    def test_silent_when_gitignore_exists(self):
+        with open(os.path.join(self.tmp, ".gitignore"), "w") as f:
+            f.write("external/\n")
+        with capture() as out:
+            anvil.warn_if_no_gitignore(self.tmp)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unrelated_gitignore_content_is_taken_at_face_value(self):
+        # the design refuses to parse gitignore patterns -- presence alone silences the warning
+        with open(os.path.join(self.tmp, ".gitignore"), "w") as f:
+            f.write("*.o\n")
+        with capture() as out:
+            anvil.warn_if_no_gitignore(self.tmp)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_dedup_is_keyed_by_project_not_global(self):
+        other = tempfile.mkdtemp()
+        try:
+            with capture():
+                anvil.warn_if_no_gitignore(self.tmp)
+            with capture() as out:
+                anvil.warn_if_no_gitignore(other)
+            self.assertIn("no .gitignore", out.getvalue())
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+
+class TestCmdInitScaffoldsGit(TempCase):
+    def test_git_init_and_gitignore_appear_after_a_plain_init(self):
+        os.chdir(self.tmp)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_init(["--board", "Nexys-A7-50T"])
+        self.assertTrue(os.path.isdir(".git"))
+        self.assertTrue(os.path.isfile(".gitignore"))
+
+    def test_second_init_does_not_touch_an_edited_gitignore(self):
+        os.chdir(self.tmp)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_init(["--board", "Nexys-A7-50T"])
+        with open(".gitignore", "a") as f:
+            f.write("mine.local\n")
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_init(["--board", "Nexys-A7-50T"])
+        self.assertIn("mine.local", open(".gitignore").read())
+
+    def test_does_not_nest_inside_the_enclosing_repo(self):
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        os.chdir(proj)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_init(["--board", "Nexys-A7-50T"])
+        self.assertFalse(os.path.isdir(".git"))
+
+
+class TestCmdAddmoduleWarnsAboutGitignore(TempCase):
+    def setUp(self):
+        TempCase.setUp(self)
+        anvil._warned_gitignore.clear()
+
+    def _serve_fifo(self, name="fifo", filename="fifo.tar.gz"):
+        _tar_with(self.tmp, [
+            (f"pkg/module.json", _mod_meta(name, "1.0.0")),
+            ("pkg/top.v", b"module fifo; endmodule"),
+        ], name=filename)
+
+    def test_warns_when_installing_external_module_without_gitignore(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            with capture() as out:
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        self.assertIn("no .gitignore", out.getvalue())
+
+    def test_no_warning_once_a_gitignore_is_present(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with open(".gitignore", "w") as f:
+            f.write("external/\n")
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            with capture() as out:
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        self.assertNotIn("no .gitignore", out.getvalue())
+
+    def test_bundled_only_addmodule_never_warns(self):
+        # no external/ write happens for a bundled module -- nothing to warn about yet
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with capture() as out, contextlib.suppress(SystemExit):
+            anvil.cmd_addmodule(["uart"])
+        self.assertNotIn("no .gitignore", out.getvalue())
+
+    def test_declining_the_install_does_not_warn(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        real_stdin = sys.stdin
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            sys.stdin = FakeTTY("n\n")
+            try:
+                with capture() as out:
+                    anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+            finally:
+                sys.stdin = real_stdin
+        self.assertNotIn("no .gitignore", out.getvalue())
 
 
 if __name__ == "__main__":
