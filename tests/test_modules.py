@@ -2690,5 +2690,241 @@ class TestCmdCompileRefusesHashMismatch(TempCase):
         self.assertIn("hash", out.getvalue().lower())
 
 
+class TestAddModuleNameCollision(TempCase):
+    """A name already in the project is silent only when the source matches -- a different source shadows it."""
+
+    def _uart_dir(self, dirname="myuart"):
+        d = _make_local_module(self.tmp, dirname)
+        with open(os.path.join(d, "module.json"), "w") as f:
+            json.dump({"name": "uart", "version": "1.0.0"}, f)
+        return d
+
+    def _config_bytes(self):
+        with open("config.json", "rb") as f:
+            return f.read()
+
+    def test_a_local_module_cannot_shadow_a_bundled_name(self):
+        proj = _scaffold_project(self.tmp)
+        self._uart_dir()
+        os.chdir(proj)
+        with capture(), contextlib.suppress(SystemExit):   # bundled uart carries .sv -- sv2v may be absent
+            anvil.cmd_addmodule(["uart"])
+        before = self._config_bytes()
+
+        with capture() as out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_addmodule(["../myuart"])
+
+        text = out.getvalue()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(self._config_bytes(), before)
+        self.assertIn("uart", text)
+        self.assertIn("system", text)
+        self.assertIn("../myuart", text)
+
+    def test_a_bundled_module_cannot_shadow_a_local_name_and_adds_no_dependencies(self):
+        proj = _scaffold_project(self.tmp)
+        self._uart_dir()
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../myuart"])
+        before = self._config_bytes()
+
+        with capture() as out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_addmodule(["uart"])
+
+        text = out.getvalue()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(self._config_bytes(), before)
+        self.assertEqual(sorted(json.loads(before)["modules"]), ["uart"])
+        self.assertIn("../myuart", text)
+        self.assertIn("system", text)
+
+    def test_two_refs_in_one_request_that_collide_are_refused(self):
+        proj = _scaffold_project(self.tmp)
+        self._uart_dir()
+        os.chdir(proj)
+        before = self._config_bytes()
+
+        with capture() as out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_addmodule(["../myuart", "uart"])
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(self._config_bytes(), before)
+        self.assertIn("uart", out.getvalue())
+
+    def test_a_fetched_modules_bundled_dependency_cannot_shadow_a_local_name(self):
+        proj = _scaffold_project(self.tmp)
+        self._uart_dir()
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../myuart"])
+        before = self._config_bytes()
+
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("glue", "1.0.0", depends=["uart"])),
+                ("pkg/top.v", b"module glue; endmodule"),
+            ], name="glue.tar.gz")
+            with capture() as out:
+                with self.assertRaises(SystemExit) as ctx:
+                    anvil.cmd_addmodule(["--yes", f"{base_url}/glue.tar.gz"])
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(self._config_bytes(), before)
+        self.assertIn("uart", out.getvalue())
+
+    def test_the_same_directory_by_absolute_path_is_a_silent_no_op(self):
+        proj = _scaffold_project(self.tmp)
+        mod = self._uart_dir()
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../myuart"])
+        before = self._config_bytes()
+
+        with capture() as out:
+            anvil.cmd_addmodule([mod])
+
+        self.assertIn("already present", out.getvalue())
+        self.assertEqual(self._config_bytes(), before)
+
+    def test_the_same_directory_through_a_tilde_is_a_silent_no_op(self):
+        proj = _scaffold_project(self.tmp)
+        self._uart_dir()
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../myuart"])
+        before = self._config_bytes()
+
+        saved = os.environ.get("HOME")
+        os.environ["HOME"] = os.path.realpath(self.tmp)
+        try:
+            with capture() as out:
+                anvil.cmd_addmodule(["~/myuart"])
+        finally:
+            if saved is None:
+                del os.environ["HOME"]
+            else:
+                os.environ["HOME"] = saved
+
+        self.assertIn("already present", out.getvalue())
+        self.assertEqual(self._config_bytes(), before)
+
+    def test_a_different_directory_declaring_the_same_name_is_still_a_collision(self):
+        proj = _scaffold_project(self.tmp)
+        self._uart_dir()
+        other = self._uart_dir("otheruart")
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../myuart"])
+        before = self._config_bytes()
+
+        with capture() as out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_addmodule([other])
+
+        text = out.getvalue()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(self._config_bytes(), before)
+        self.assertIn("../myuart", text)
+        self.assertIn("otheruart", text)
+
+    def test_re_adding_the_same_local_source_is_still_a_silent_no_op(self):
+        proj = _scaffold_project(self.tmp)
+        _make_local_module(self.tmp, "plain")
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../plain"])
+        before = self._config_bytes()
+
+        with capture() as out:
+            anvil.cmd_addmodule(["../plain"])
+
+        self.assertIn("already present", out.getvalue())
+        self.assertEqual(self._config_bytes(), before)
+
+
+class TestAddModuleFetchFailure(TempCase):
+    """fetch's own exceptions must reach the user through fail(), not as a traceback out of main()."""
+
+    def setUp(self):
+        TempCase.setUp(self)
+        self._made = []
+        self._real_mkdtemp = anvil.tempfile.mkdtemp
+        def tracking_mkdtemp(*a, **k):
+            d = self._real_mkdtemp(*a, **k)
+            self._made.append(d)
+            return d
+        anvil.tempfile.mkdtemp = tracking_mkdtemp
+
+    def tearDown(self):
+        anvil.tempfile.mkdtemp = self._real_mkdtemp
+        TempCase.tearDown(self)
+
+    def test_an_archive_without_module_json_fails_without_a_traceback(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with open("config.json", "rb") as f:
+            before = f.read()
+
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [("junk/readme.txt", b"no module here")], name="junk.tar.gz")
+            with capture() as out:
+                with self.assertRaises(SystemExit) as ctx:
+                    anvil.cmd_addmodule(["--yes", f"{base_url}/junk.tar.gz"])
+
+        text = out.getvalue()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("junk.tar.gz", text)
+        self.assertIn("module.json", text)
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertFalse(os.path.isdir("external"))
+        self.assertTrue(self._made)
+        for d in self._made:
+            self.assertFalse(os.path.exists(d))
+
+    def test_a_fetch_error_reaching_the_handler_untagged_still_fails_cleanly(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        def untagged(*a, **k):   # a fetch call added to that try later would not carry a ref
+            raise fetch.InvalidModule("boom")
+
+        real = anvil.plan_external
+        anvil.plan_external = untagged
+        try:
+            with capture() as out:
+                with self.assertRaises(SystemExit) as ctx:
+                    anvil.cmd_addmodule(["--yes", "http://127.0.0.1:1/never-reached.tar.gz"])
+        finally:
+            anvil.plan_external = real
+
+        text = out.getvalue()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("could not fetch", text)
+        self.assertIn("boom", text)
+        self.assertTrue(self._made)
+        for d in self._made:
+            self.assertFalse(os.path.exists(d))
+
+    def test_a_url_with_no_archive_behind_it_fails_without_a_traceback(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+
+        with serve(self.tmp) as base_url:
+            with capture() as out:
+                with self.assertRaises(SystemExit) as ctx:
+                    anvil.cmd_addmodule(["--yes", f"{base_url}/missing.tar.gz"])
+
+        text = out.getvalue()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("missing.tar.gz", text)
+        self.assertTrue(self._made)
+        for d in self._made:
+            self.assertFalse(os.path.exists(d))
+
+
 if __name__ == "__main__":
     unittest.main()

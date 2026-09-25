@@ -131,6 +131,20 @@ def entry_ref(name, entry):
         return "./" + entry["path"]   # external/<name>@<version> -- a path, not a bundled key
     return f"{name}@{entry['version']}"
 
+def already_recorded(name, source, existing):
+    """True if `name` is already this project's from this very source; any other source would shadow it, and fails."""
+    if name not in existing:
+        return False
+    if existing[name].get("source") == source:
+        return True
+    # a local ref is judged by where it resolves, the way removemodule already resolves one -- "system" and URLs are not paths
+    if (fetch.classify(source) == "path"
+            and find_by_local_path({name: existing[name]}, os.getcwd(), os.path.expanduser(source)) == name):
+        return True
+    fail(f"module '{name}' is already in this project",
+         f"present:  {existing[name].get('source')}\n"
+         f"incoming: {source}")
+
 def install_external(ref, staging):
     """Download and validate `ref` into a fresh directory under `staging`; nothing is installed yet.
 
@@ -154,11 +168,12 @@ def plan_external(refs, staging, existing):
     queue, seen, out = [(r, None) for r in refs], {}, []
     while queue:
         ref, required_by = queue.pop(0)
-        name, meta, staged, resolved = install_external(ref, staging)
-        if name in existing and existing[name].get("source") != resolved:
-            fail(f"module '{name}' is already in this project",
-                 f"present:  {existing[name].get('source')}\n"
-                 f"incoming: {resolved}")
+        try:
+            name, meta, staged, resolved = install_external(ref, staging)
+        except (fetch.NoArchiveFound, fetch.InvalidModule, fetch.UnsafeArchive) as e:
+            e.ref = ref   # the queue also walks transitive deps -- only here knows which ref this was
+            raise
+        already_recorded(name, resolved, existing)
         # two refs in the same request resolving to one name is the same risk, just not against config.json yet
         if name in seen and seen[name] != resolved:
             fail(f"module '{name}' resolves to two different sources in this request",
@@ -1234,14 +1249,15 @@ def cmd_addmodule(args):
         chain = resolve_deps(mod, registry, base_dir=os.getcwd())
         for (key, mod_dir, meta) in chain:
             name = meta["name"]
-            if name not in current and name not in to_add:
-                entry = make_entry(key, mod_dir, meta)
-                if key in local_refs:
-                    # path stays the resolvable alias -- only source shows the literal ref typed
-                    entry["source"] = local_refs[key]
-                    key = local_refs[key]
-                to_add[name] = entry
-                added_keys.append(key)
+            entry = make_entry(key, mod_dir, meta)
+            if key in local_refs:
+                # path stays the resolvable alias -- only source shows the literal ref typed
+                entry["source"] = local_refs[key]
+                key = local_refs[key]
+            if already_recorded(name, entry["source"], {**current, **to_add}):
+                continue
+            to_add[name] = entry
+            added_keys.append(key)
 
     if external_refs:
         staging = tempfile.mkdtemp()
@@ -1281,9 +1297,14 @@ def cmd_addmodule(args):
                     if fetch.classify(dep) == "name":   # bundled deps of a fetched module
                         for (key, mod_dir, meta) in resolve_deps(dep, registry, base_dir=os.getcwd()):
                             name = meta["name"]
-                            if name not in current and name not in to_add:
-                                to_add[name] = make_entry(key, mod_dir, meta)
-                                added_keys.append(key)
+                            entry = make_entry(key, mod_dir, meta)
+                            if already_recorded(name, entry["source"], {**current, **to_add}):
+                                continue
+                            to_add[name] = entry
+                            added_keys.append(key)
+        except (fetch.NoArchiveFound, fetch.InvalidModule, fetch.UnsafeArchive) as e:
+            ref = getattr(e, "ref", None)   # plan_external's queue tags it -- a fetch added to this try later may not
+            fail(f"could not fetch module '{ref}'" if ref else "addmodule could not fetch an external module", str(e))
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
