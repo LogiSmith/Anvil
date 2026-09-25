@@ -1851,6 +1851,89 @@ class TestEnsureModulesViaCmdSynth(TempCase):
             self.assertIn("m@1.0.0", f.read())
 
 
+class TestEnsureModulesViaCmdTest(TempCase):
+    """cmd_test's config-present branch needs the same safety net as cmd_synth."""
+
+    def test_missing_external_module_is_refetched_and_run_proceeds(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("m", "1.0.0")),
+                ("pkg/top.v", b"module m; endmodule"),
+            ], name="m.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/m.tar.gz"])
+            shutil.rmtree(anvil.EXTERNAL_DIR)   # simulate a fresh clone: git-ignored, so absent
+            os.makedirs("tb")
+            with open("tb/m_tb.v", "w") as f:
+                f.write("module m_tb; endmodule\n")
+
+            # the re-fetch inside cmd_test needs the server still up -- stays in this block
+            with capture() as out:
+                with contextlib.suppress(SystemExit):   # sandbox has no iverilog -- expected
+                    anvil.cmd_test(["tb/m_tb.v"])
+
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "top.v")))
+        self.assertIn("Fetching m", out.getvalue())
+        self.assertNotIn("module.json not found", out.getvalue())
+
+    def test_hash_mismatch_fails_the_same_way_cmd_synth_does(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        with capture():
+            anvil.cmd_addmodule(["../m"])
+        with open(os.path.join(d, "top.v"), "w") as f:
+            f.write("module m; wire tampered; endmodule\n")   # edited after recording
+        os.makedirs("tb")
+        with open("tb/m_tb.v", "w") as f:
+            f.write("module m_tb; endmodule\n")
+
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.cmd_test(["tb/m_tb.v"])
+        text = out.getvalue()
+        self.assertIn("hash", text.lower())
+        self.assertIn("m", text)
+        self.assertIn("anvil addmodule --force m", text)
+
+    def test_present_and_matching_is_silent_before_the_toolchain_boundary(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        with capture():
+            anvil.cmd_addmodule(["../m"])   # local -- no network needed, no toolchain either
+        os.makedirs("tb")
+        with open("tb/m_tb.v", "w") as f:
+            f.write("module m_tb; endmodule\n")
+
+        with capture() as out:
+            with contextlib.suppress(SystemExit):   # sandbox has no iverilog -- expected
+                anvil.cmd_test(["tb/m_tb.v"])
+        text = out.getvalue()
+        self.assertNotIn("Fetching", text)
+        self.assertIn("[TEST] Testbench:", text)
+
+    def test_no_config_present_path_is_unaffected(self):
+        proj = os.path.join(self.tmp, "proj")
+        os.makedirs(proj)
+        os.chdir(proj)
+        with open("top.v", "w") as f:
+            f.write("module top; endmodule\n")
+        os.makedirs("tb")
+        with open("tb/top_tb.v", "w") as f:
+            f.write("module top_tb; endmodule\n")
+
+        with capture() as out:
+            with contextlib.suppress(SystemExit):   # sandbox has no iverilog -- expected
+                anvil.cmd_test(["tb/top_tb.v"])
+        text = out.getvalue()
+        self.assertIn("[TEST] Testbench:", text)
+        self.assertNotIn("Fetching", text)
+
+
 class TestMonorepoSubpathRoundTrip(TempCase, StdinCase):
     """A URL ref's #subpath must survive into `source`, or the module can never be re-fetched."""
 

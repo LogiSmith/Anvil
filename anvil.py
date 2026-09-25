@@ -1579,7 +1579,9 @@ def cmd_test(args):
             else:
                 src_files.append(s)
     elif os.path.exists(CONFIG_FILE):
-        src_files = collect_sources(config=load_config())
+        config = load_config()
+        ensure_modules(config)
+        src_files = collect_sources(config=config)
     elif os.path.exists("module.json"):
         with open("module.json") as mf:
             mod_meta = json.load(mf)
