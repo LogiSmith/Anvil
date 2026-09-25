@@ -116,6 +116,10 @@ def bundled_path(key):
     """A bundled module's location, written without the user's home directory."""
     return f"$ANVIL_HOME/modules/{key}"
 
+def anvil_home_path(path):
+    """A recorded path with $ANVIL_HOME resolved to this installation -- the one place that substitution happens."""
+    return path.replace("$ANVIL_HOME", SCRIPT_DIR) if path.startswith("$ANVIL_HOME") else path
+
 def make_entry(key, mod_dir, meta):
     """A schema-2 entry for a module already resolved via load_module_meta/resolve_deps."""
     version = meta.get("version", "1.0.0")
@@ -290,13 +294,20 @@ def external_module_path(entry, base):
     path = entry.get("path")
     return os.path.realpath(os.path.join(base, path)) if path else None
 
+def inside_external(path, base):
+    """`path` resolved absolute when it lands strictly inside external/, else None -- one rule, so the fetch and delete paths cannot be hardened apart again."""
+    if not path:
+        return None
+    ext_root = os.path.realpath(os.path.join(base, EXTERNAL_DIR))
+    target   = os.path.realpath(os.path.join(base, path))
+    if target == ext_root or os.path.commonpath([ext_root, target]) != ext_root:
+        return None
+    return target
+
 def delete_fetched_directory(name, entry, base, keep):
     """Delete only if it resolves inside external/ and isn't shared with a surviving entry -- a failed delete just warns, since config.json is already saved."""
-    ext_root = os.path.realpath(os.path.join(base, EXTERNAL_DIR))
-    mod_dir  = external_module_path(entry, base)
-    if mod_dir is None or mod_dir == ext_root or mod_dir in keep:
-        return
-    if os.path.commonpath([ext_root, mod_dir]) != ext_root:
+    mod_dir = inside_external(entry.get("path"), base)
+    if mod_dir is None or mod_dir in keep:
         return
     if not os.path.isdir(mod_dir):
         return
@@ -531,24 +542,36 @@ def ensure_modules(config):
     Re-fetching does not ask again: config.json already records what was agreed to,
     and a matching hash is the proof the same code came back.
     """
+    base = os.getcwd()
     for name, entry in config.get("modules", {}).items():
         path  = entry["path"]
-        local = path.replace("$ANVIL_HOME", SCRIPT_DIR) if path.startswith("$ANVIL_HOME") else path
+        local = anvil_home_path(path)
         if not os.path.isdir(local):
             if fetch.classify(entry["source"]) != "url":
                 fail(f"module '{name}' is missing",
                      f"{path} does not exist and '{entry['source']}' cannot be re-fetched")
+            dest = inside_external(local, base)
+            if dest is None:   # before the fetch, so a crafted config cannot even make Anvil ask for the archive
+                fail(f"module '{name}' records a path outside external/",
+                     f"path: {path}\na fetched module is only ever written inside external/")
             print(f"[Anvil] Fetching {name} from {entry['source']} ...")
             staging = tempfile.mkdtemp()
             try:
                 _, _, staged, _ = install_external(entry["source"], staging)
-                warn_if_no_gitignore(os.getcwd())
+                got = fetch.module_hash(staged)
+                if got != entry["hash"]:
+                    fail(f"module '{name}' does not match its recorded hash",
+                         f"source: {entry['source']}\n"
+                         f"recorded: {entry['hash']}\n   found: {got}\n"
+                         "the recorded source returned different code -- the tag may have moved")
+                warn_if_no_gitignore(base)
                 os.makedirs(EXTERNAL_DIR, exist_ok=True)
-                shutil.move(staged, local)
+                shutil.move(staged, dest)
             except (fetch.NoArchiveFound, fetch.InvalidModule, fetch.UnsafeArchive) as e:
                 fail(f"could not re-fetch module '{name}'", f"source: {entry['source']}\n{e}")
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
+            continue
         got = fetch.module_hash(local)
         if got != entry["hash"]:
             fail(f"module '{name}' does not match its recorded hash",

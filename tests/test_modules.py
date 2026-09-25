@@ -25,6 +25,27 @@ def serve(directory):
         srv.shutdown()
         srv.server_close()
 
+@contextlib.contextmanager
+def serve_counted(directory):
+    """`serve`, plus the list of paths requested -- the proof that a check ran before any fetch."""
+    hits = []
+    class Counting(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=directory, **kw)
+        def do_GET(self):
+            hits.append(self.path)
+            super().do_GET()
+        def do_HEAD(self):
+            hits.append(self.path)
+            super().do_HEAD()
+    srv = socketserver.TCPServer(("127.0.0.1", 0), Counting)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}", hits
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
 class TempCase(unittest.TestCase):
     """A TestCase with a scratch directory and a restored working directory."""
     def setUp(self):
@@ -1815,7 +1836,7 @@ class TestEnsureModules(TempCase):
                     anvil.ensure_modules(cfg)
         text = out.getvalue().lower()
         self.assertIn("hash", text)
-        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "module.json")))
+        self.assertFalse(os.path.exists(anvil.EXTERNAL_DIR))
 
     def test_no_modules_is_a_no_op(self):
         proj = _scaffold_project(self.tmp)
@@ -1823,6 +1844,150 @@ class TestEnsureModules(TempCase):
         with capture() as out:
             anvil.ensure_modules(self._cfg())
         self.assertEqual(out.getvalue(), "")
+
+
+class TestInsideExternal(TempCase):
+    """inside_external: the one containment rule, shared by the fetch and the delete path."""
+
+    def test_a_path_under_external_resolves(self):
+        os.makedirs(os.path.join(self.tmp, "external", "m@1.0.0"))
+        self.assertEqual(anvil.inside_external("external/m@1.0.0", self.tmp),
+                         os.path.realpath(os.path.join(self.tmp, "external", "m@1.0.0")))
+
+    def test_a_sibling_named_external_backup_is_outside(self):
+        os.makedirs(os.path.join(self.tmp, "external-backup", "m"))
+        self.assertIsNone(anvil.inside_external("external-backup/m", self.tmp))
+
+    def test_external_itself_is_not_a_module_directory(self):
+        os.makedirs(os.path.join(self.tmp, "external"))
+        self.assertIsNone(anvil.inside_external("external", self.tmp))
+
+    def test_an_empty_path_is_outside(self):
+        self.assertIsNone(anvil.inside_external("", self.tmp))
+        self.assertIsNone(anvil.inside_external(None, self.tmp))
+
+    def test_a_parent_ref_that_normalises_back_inside_is_inside(self):
+        os.makedirs(os.path.join(self.tmp, "external", "m"))
+        self.assertEqual(anvil.inside_external("external/../external/m", self.tmp),
+                         os.path.realpath(os.path.join(self.tmp, "external", "m")))
+
+    def test_a_symlink_pointing_outside_is_outside(self):
+        os.makedirs(os.path.join(self.tmp, "external"))
+        target = os.path.join(self.tmp, "real-target")
+        os.makedirs(target)
+        os.symlink(target, os.path.join(self.tmp, "external", "evil"))
+        self.assertIsNone(anvil.inside_external("external/evil", self.tmp))
+
+    def test_a_parent_escape_is_outside(self):
+        self.assertIsNone(anvil.inside_external("../OUTSIDE/planted", self.tmp))
+
+
+class TestEnsureModulesPathContainment(TempCase):
+    """A URL entry's path must resolve inside external/, and be refused before anything is fetched."""
+
+    def _served_module(self):
+        srv = os.path.join(self.tmp, "srv")
+        os.makedirs(srv)
+        m = _make_module(srv)
+        digest = fetch.module_hash(m)
+        _archive_of(srv, m)
+        return srv, digest
+
+    def _cfg(self, url, path, digest):
+        return {"schema": "2.0", "modules": {"m": {"version": "1.0.0", "source": url,
+                                                    "path": path, "hash": digest}}}
+
+    def test_a_path_outside_the_project_is_refused_before_any_fetch(self):
+        proj = _scaffold_project(self.tmp)
+        srv, digest = self._served_module()
+        outside = os.path.join(self.tmp, "OUTSIDE")
+        os.makedirs(outside)
+        os.chdir(proj)
+
+        with serve_counted(srv) as (base_url, hits):
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.ensure_modules(self._cfg(f"{base_url}/a.tar.gz",
+                                                   "../OUTSIDE/planted", digest))
+        self.assertEqual(hits, [])
+        self.assertEqual(os.listdir(outside), [])
+        self.assertIn("../OUTSIDE/planted", out.getvalue())
+
+    def test_an_anvil_home_path_on_a_url_entry_is_refused_before_any_fetch(self):
+        proj = _scaffold_project(self.tmp)
+        srv, digest = self._served_module()
+        home = os.path.join(self.tmp, "anvilhome")
+        os.makedirs(os.path.join(home, "modules"))
+        os.chdir(proj)
+
+        real_script_dir = anvil.SCRIPT_DIR
+        anvil.SCRIPT_DIR = home                 # never let a RED run plant into the real installation
+        try:
+            with serve_counted(srv) as (base_url, hits):
+                with capture() as out:
+                    with self.assertRaises(SystemExit):
+                        anvil.ensure_modules(self._cfg(f"{base_url}/a.tar.gz",
+                                                       "$ANVIL_HOME/modules/planted", digest))
+        finally:
+            anvil.SCRIPT_DIR = real_script_dir
+        self.assertEqual(hits, [])
+        self.assertEqual(os.listdir(os.path.join(home, "modules")), [])
+        self.assertIn("$ANVIL_HOME/modules/planted", out.getvalue())
+
+    def test_a_healthy_external_path_still_fetches(self):
+        proj = _scaffold_project(self.tmp)
+        srv, digest = self._served_module()
+        os.chdir(proj)
+
+        with serve_counted(srv) as (base_url, hits):
+            with capture():
+                anvil.ensure_modules(self._cfg(f"{base_url}/a.tar.gz",
+                                               os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"), digest))
+        self.assertTrue(hits)
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "module.json")))
+
+
+class TestEnsureModulesChangedUpstream(TempCase):
+    """A re-fetch that hashes differently is verified in staging, so external/ keeps nothing unverified."""
+
+    def test_a_changed_upstream_fails_without_force_and_leaves_external_empty(self):
+        proj = _scaffold_project(self.tmp)
+        srv  = os.path.join(self.tmp, "srv")
+        os.makedirs(srv)
+        m = _make_module(srv)
+        recorded = fetch.module_hash(m)
+        with open(os.path.join(m, "top.v"), "w") as f:
+            f.write("assign x = 0;\n")              # the tag moved under the recorded source
+        _archive_of(srv, m)
+        os.chdir(proj)
+
+        with serve(srv) as base_url:
+            cfg = {"schema": "2.0", "modules": {"m": {
+                "version": "1.0.0", "source": f"{base_url}/a.tar.gz",
+                "path": os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"), "hash": recorded}}}
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.ensure_modules(cfg)
+        tail = out.getvalue().split("✗", 1)[1]
+        self.assertNotIn("--force", tail)
+        self.assertIn(base_url, tail)
+        self.assertIn(recorded, tail)
+        self.assertFalse(os.path.exists(anvil.EXTERNAL_DIR))
+
+    def test_a_locally_edited_module_still_says_force(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        recorded = fetch.module_hash(d)
+        with open(os.path.join(d, "top.v"), "w") as f:
+            f.write("module m; wire edited; endmodule\n")
+
+        cfg = {"schema": "2.0", "modules": {"m": {"version": "1.0.0", "source": "../m",
+                                                   "path": "../m", "hash": recorded}}}
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.ensure_modules(cfg)
+        self.assertIn("--force", out.getvalue())
 
 
 class TestEnsureModulesViaCmdSynth(TempCase):
