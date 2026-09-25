@@ -36,12 +36,14 @@ anvil program                      # flash the board
 
 ```
 anvil.py        ← the CLI
+fetch.py        ← module sourcing: URL/path resolution, hashing, archives
 programator.py  ← firmware .mem → Verilog RAM generator
 boards.json     ← board registry
 modules.json    ← module registry
 modules/        ← reusable RTL modules (<name>@<version>/)
 xdc/            ← per-board master pin constraints
 examples/       ← example projects per board
+tests/          ← test suite (plain unittest, no dependencies)
 docs/           ← developer documentation (MkDocs)
 ```
 

@@ -18,7 +18,7 @@ build flow works, and the schemas of the JSON files it reads and writes.
 |---------|---------------|
 | [Architecture](architecture.md) | How `anvil.py` is structured and the end-to-end build flow: `config.json` → source collection → `sv2v` → generated `Makefile` → F4PGA |
 | [File formats](file-formats.md) | Schema reference for `config.json`, `module.json`, `soc.json`, `boards.json`, `modules.json` |
-| [Module system](modules.md) | How modules resolve internally: the registry, `depends` resolution, authoring & installing modules |
+| [Module system](modules.md) | How modules resolve internally: the registry, module sources (bundled, local path, URL), `depends` resolution, authoring & installing modules |
 | [Contributing](contributing.md) | Dev setup and how to add a command, module, or board |
 
 ---
@@ -28,12 +28,14 @@ build flow works, and the schemas of the JSON files it reads and writes.
 ```
 anvil/
 ├── anvil.py          ← the CLI (all commands)
+├── fetch.py          ← module sourcing: URL/path resolution, hashing, archives
 ├── programator.py    ← firmware .mem → Verilog RAM generator
 ├── boards.json       ← board registry
 ├── modules.json      ← module registry
 ├── modules/          ← reusable RTL modules (<name>@<version>/)
 ├── xdc/              ← per-board master pin-constraint files
 ├── examples/         ← example projects per board
+├── tests/            ← test suite (plain unittest, no dependencies)
 └── docs/             ← this documentation
 ```
 
