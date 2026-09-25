@@ -423,6 +423,12 @@ def get_resolved_modules(config):
     check_url_deps_are_recorded(resolved, modules)
     return resolved
 
+def url_dep_candidates(dep):
+    """Every source a URL dep could have been recorded as -- candidates, not ==, since a shorthand ref won't match the resolved URL plan_external recorded verbatim."""
+    _, _, subpath = fetch.split_ref(dep)
+    candidates = fetch.archive_candidates(dep)
+    return [f"{c}#{subpath}" for c in candidates] if subpath else candidates   # install_external reattaches the subpath to source; the comparison must too
+
 def check_url_deps_are_recorded(resolved, modules):
     """resolve_deps trusts a URL depends entry is already its own entry -- this is where that trust is checked."""
     sources = [e.get("source") for e in modules.values()]
@@ -430,12 +436,7 @@ def check_url_deps_are_recorded(resolved, modules):
         for dep in meta.get("depends", []):
             if fetch.classify(dep) != "url":
                 continue
-            _, _, subpath = fetch.split_ref(dep)
-            # candidates, not == -- a shorthand ref won't match the resolved URL plan_external recorded verbatim
-            candidates = fetch.archive_candidates(dep)
-            if subpath:   # install_external reattaches it to source; the comparison must too
-                candidates = [f"{c}#{subpath}" for c in candidates]
-            if not any(c in sources for c in candidates):
+            if not any(c in sources for c in url_dep_candidates(dep)):
                 fail(f"module '{meta['name']}' depends on '{dep}', which is not in this project",
                      "config.json and this module's own dependencies disagree")
 
@@ -1350,9 +1351,15 @@ def cmd_removemodule(args):
             continue   # gone from disk -- cannot be asserting a dependency on anything
         meta, _, _ = load_module_meta(ref, base_dir=base)
         for dep in meta.get("depends", []):
-            _, _, dep_meta = resolve_deps(dep, registry, base_dir=os.getcwd())[0]
-            if dep_meta["name"] in to_remove:
-                print(f"[ERROR] Cannot remove '{dep_meta['name']}' -- '{name}' depends on it.")
+            if fetch.classify(dep) == "url":
+                # a URL is not a registry name, so it is matched against the entries themselves -- same rule as check_url_deps_are_recorded
+                candidates = url_dep_candidates(dep)
+                dep_name = next((n for n in to_remove if current[n].get("source") in candidates), None)
+            else:
+                _, _, dep_meta = resolve_deps(dep, registry, base_dir=os.getcwd())[-1]   # [-1] is dep itself -- resolve_deps appends its children first
+                dep_name = dep_meta["name"]
+            if dep_name in to_remove:
+                print(f"[ERROR] Cannot remove '{dep_name}' -- '{name}' depends on it.")
                 sys.exit(1)
 
     removed = [n for n in current if n in to_remove]

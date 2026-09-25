@@ -771,11 +771,14 @@ class TestInstallExternal(TempCase):
         self.assertTrue(os.path.isdir(staging))
 
 
-def _make_local_module(base, name="local-mod", version="1.0.0"):
+def _make_local_module(base, name="local-mod", version="1.0.0", depends=None):
     d = os.path.join(base, name)
     os.makedirs(d, exist_ok=True)
+    meta = {"name": name, "version": version}
+    if depends:
+        meta["depends"] = depends
     with open(os.path.join(d, "module.json"), "w") as f:
-        json.dump({"name": name, "version": version}, f)
+        json.dump(meta, f)
     with open(os.path.join(d, "top.v"), "w") as f:
         f.write("module m; endmodule\n")
     return d
@@ -2484,6 +2487,137 @@ class TestRemoveModuleDeletesFetchedDirectory(TempCase):
         self.assertTrue(os.path.islink(link))
         with open("config.json") as f:
             self.assertNotIn("evil", json.load(f)["modules"])
+
+
+class TestRemoveModuleDependencyConflicts(TempCase):
+    """The conflict loop resolves every surviving module's depends -- a URL there is not a registry name."""
+
+    def _serve_axi(self):
+        _tar_with(self.tmp, [
+            ("pkg/module.json", _mod_meta("axi")),
+            ("pkg/top.v", b"module axi; endmodule"),
+        ], name="axi.tar.gz")
+        return serve(self.tmp)
+
+    def test_a_surviving_url_dependency_does_not_block_an_unrelated_removal(self):
+        proj = _scaffold_project(self.tmp)
+        with self._serve_axi() as base_url:
+            url = f"{base_url}/axi.tar.gz"
+            _make_local_module(self.tmp, "glue", depends=[url])
+            _make_local_module(self.tmp, "spare")
+            os.chdir(proj)
+            with capture():
+                anvil.cmd_addmodule(["--yes", url])
+                anvil.cmd_addmodule(["../glue", "../spare"])
+
+            with capture() as out:
+                anvil.cmd_removemodule(["spare"])
+
+        self.assertNotIn("Unknown module", out.getvalue())
+        with open("config.json") as f:
+            mods = json.load(f)["modules"]
+        self.assertEqual(sorted(mods), ["axi", "glue"])
+
+    def test_a_url_module_a_survivor_depends_on_is_refused_and_nothing_is_touched(self):
+        proj = _scaffold_project(self.tmp)
+        with self._serve_axi() as base_url:
+            url = f"{base_url}/axi.tar.gz"
+            _make_local_module(self.tmp, "glue", depends=[url])
+            os.chdir(proj)
+            with capture():
+                anvil.cmd_addmodule(["--yes", url])
+                anvil.cmd_addmodule(["../glue"])
+            with open("config.json", "rb") as f:
+                before = f.read()
+            mod_dir = os.path.join(anvil.EXTERNAL_DIR, "axi@1.0.0")
+
+            with capture() as out:
+                with self.assertRaises(SystemExit) as ctx:
+                    anvil.cmd_removemodule(["axi"])
+
+        text = out.getvalue()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("Cannot remove 'axi'", text)
+        self.assertIn("'glue' depends on it", text)
+        self.assertNotIn("Unknown module", text)
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertTrue(os.path.isdir(mod_dir))
+
+    def test_a_url_module_nothing_depends_on_is_still_removable(self):
+        proj = _scaffold_project(self.tmp)
+        with self._serve_axi() as base_url:
+            url = f"{base_url}/axi.tar.gz"
+            _make_local_module(self.tmp, "spare")
+            os.chdir(proj)
+            with capture():
+                anvil.cmd_addmodule(["--yes", url])
+                anvil.cmd_addmodule(["../spare"])
+            mod_dir = os.path.join(anvil.EXTERNAL_DIR, "axi@1.0.0")
+
+            with capture() as out:
+                anvil.cmd_removemodule(["axi"])
+
+        self.assertIn("Removed: axi", out.getvalue())
+        self.assertFalse(os.path.exists(mod_dir))
+        with open("config.json") as f:
+            self.assertEqual(sorted(json.load(f)["modules"]), ["spare"])
+
+    def test_a_url_module_and_its_only_dependent_go_in_one_command(self):
+        proj = _scaffold_project(self.tmp)
+        with self._serve_axi() as base_url:
+            url = f"{base_url}/axi.tar.gz"
+            _make_local_module(self.tmp, "glue", depends=[url])
+            os.chdir(proj)
+            with capture():
+                anvil.cmd_addmodule(["--yes", url])
+                anvil.cmd_addmodule(["../glue"])
+            mod_dir = os.path.join(anvil.EXTERNAL_DIR, "axi@1.0.0")
+
+            with capture() as out:
+                anvil.cmd_removemodule(["glue", "axi"])
+
+        self.assertNotIn("Cannot remove", out.getvalue())
+        self.assertFalse(os.path.exists(mod_dir))
+        with open("config.json") as f:
+            self.assertEqual(json.load(f)["modules"], {})
+
+    def test_a_genuine_dependency_is_still_refused(self):
+        proj = _scaffold_project(self.tmp)
+        _make_local_module(self.tmp, "leaf")
+        _make_local_module(self.tmp, "glue", depends=["../leaf"])
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../glue"])
+
+        with capture() as out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_removemodule(["leaf"])
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("Cannot remove 'leaf'", out.getvalue())
+        self.assertIn("'glue' depends on it", out.getvalue())
+        with open("config.json") as f:
+            self.assertIn("leaf", json.load(f)["modules"])
+
+    def test_the_named_dependency_blocks_not_its_deepest_child(self):
+        proj = _scaffold_project(self.tmp)
+        _make_local_module(self.tmp, "leaf")
+        _make_local_module(self.tmp, "mid", depends=["../leaf"])
+        _make_local_module(self.tmp, "glue", depends=["../mid"])
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../glue"])
+
+        with capture() as out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_removemodule(["mid"])
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("Cannot remove 'mid'", out.getvalue())
+        self.assertIn("'glue' depends on it", out.getvalue())
+        with open("config.json") as f:
+            self.assertIn("mid", json.load(f)["modules"])
 
 
 class TestEnsureModulesViaCmdBuild(TempCase):
