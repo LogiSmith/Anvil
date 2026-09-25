@@ -505,6 +505,7 @@ def ensure_modules(config):
             staging = tempfile.mkdtemp()
             try:
                 _, _, staged, _ = install_external(entry["source"], staging)
+                warn_if_no_gitignore(os.getcwd())
                 os.makedirs(EXTERNAL_DIR, exist_ok=True)
                 shutil.move(staged, local)
             except (fetch.NoArchiveFound, fetch.InvalidModule, fetch.UnsafeArchive) as e:
@@ -995,7 +996,11 @@ def scaffold_git(root):
         inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
                                  cwd=root, capture_output=True, text=True)
         if inside.returncode != 0:
-            subprocess.run(["git", "init", "-q"], cwd=root, capture_output=True)
+            init = subprocess.run(["git", "init", "-q"], cwd=root, capture_output=True, text=True)
+            if init.returncode != 0:
+                reason = next(iter((init.stderr or "").strip().splitlines()), "no repository was created")
+                print(f"[WARN] git init failed -- {reason}")
+                print("       version control was not set up; run `git init` yourself when ready")
     except FileNotFoundError:
         pass                                          # no git on this machine -- .gitignore still helps
     if not os.path.exists(os.path.join(root, ".gitignore")):

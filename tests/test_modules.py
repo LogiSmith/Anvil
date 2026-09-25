@@ -2178,5 +2178,94 @@ class TestCmdAddmoduleWarnsAboutGitignore(TempCase):
         self.assertNotIn("no .gitignore", out.getvalue())
 
 
+class TestEnsureModulesWarnsAboutGitignore(TempCase):
+    """A fresh clone restoring external/ is the likeliest way to hit the missing-.gitignore case."""
+
+    def setUp(self):
+        TempCase.setUp(self)
+        anvil._warned_gitignore.clear()
+
+    def test_warns_when_ensure_modules_refetches_into_external(self):
+        proj = _scaffold_project(self.tmp)
+        srv  = os.path.join(self.tmp, "srv")
+        os.makedirs(srv)
+        m = _make_module(srv)
+        expected = fetch.module_hash(m)
+        _archive_of(srv, m)
+        os.chdir(proj)
+        with serve(srv) as base_url:
+            cfg = {"schema": "2.0", "modules": {
+                "m": {"version": "1.0.0", "source": f"{base_url}/a.tar.gz",
+                      "path": os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"), "hash": expected}}}
+            with capture() as out:
+                anvil.ensure_modules(cfg)
+        self.assertIn("no .gitignore", out.getvalue())
+
+    def test_warns_once_across_addmodule_then_a_later_restore(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("m", "1.0.0")),
+                ("pkg/top.v", b"module m; endmodule"),
+            ], name="m.tar.gz")
+            with capture() as out1:
+                anvil.cmd_addmodule(["--yes", f"{base_url}/m.tar.gz"])
+            self.assertIn("no .gitignore", out1.getvalue())
+            with open("config.json") as f:
+                cfg = json.load(f)
+            shutil.rmtree(anvil.EXTERNAL_DIR)   # simulate a fresh clone: git-ignored, so absent
+            with capture() as out2:
+                anvil.ensure_modules(cfg)
+        self.assertNotIn("no .gitignore", out2.getvalue())   # same project -- already warned
+
+    def test_a_module_present_locally_never_touches_external_and_never_warns(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        digest = fetch.module_hash(d)
+        cfg = {"schema": "2.0", "modules": {
+            "m": {"version": "1.0.0", "source": "../m", "path": "../m", "hash": digest}}}
+        with capture() as out:
+            anvil.ensure_modules(cfg)   # already present -- external/ is never written
+        self.assertEqual(out.getvalue(), "")
+
+
+class TestScaffoldGitInitFailure(TempCase):
+    def _fail_git_init(self, stderr="fatal: could not create work tree dir: Permission denied\n"):
+        real_run = anvil.subprocess.run
+        def faulty(cmd, *a, **k):
+            if cmd[:2] == ["git", "init"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=stderr)
+            return real_run(cmd, *a, **k)
+        anvil.subprocess.run = faulty
+        return real_run
+
+    def test_failed_git_init_warns_but_gitignore_is_still_written(self):
+        real_run = self._fail_git_init()
+        try:
+            with capture() as out:
+                anvil.scaffold_git(self.tmp)
+        finally:
+            anvil.subprocess.run = real_run
+        self.assertIn("git init failed", out.getvalue())
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, ".git")))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, ".gitignore")))
+
+    def test_cmd_init_still_completes_a_usable_project_when_git_init_fails(self):
+        os.chdir(self.tmp)
+        real_run = self._fail_git_init()
+        try:
+            with capture() as out, contextlib.suppress(SystemExit):
+                anvil.cmd_init(["--board", "Nexys-A7-50T"])
+        finally:
+            anvil.subprocess.run = real_run
+        self.assertIn("git init failed", out.getvalue())
+        self.assertFalse(os.path.isdir(".git"))
+        self.assertTrue(os.path.isfile("config.json"))
+        self.assertTrue(os.path.isfile(".gitignore"))
+        self.assertTrue(os.path.isfile("top.sv") or os.path.isfile("top.v"))
+
+
 if __name__ == "__main__":
     unittest.main()
