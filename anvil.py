@@ -270,6 +270,33 @@ def find_by_local_path(current, base, arg):
 def local_dir_missing(ref, base):
     return is_path_dep(ref) and not os.path.isdir(os.path.normpath(os.path.join(base, ref)))
 
+def external_module_path(entry, base):
+    """`entry`'s directory, absolute and symlink-resolved -- so a crafted or stale path can't point elsewhere."""
+    path = entry.get("path")
+    return os.path.realpath(os.path.join(base, path)) if path else None
+
+def delete_fetched_directory(name, entry, base, keep):
+    """Delete a removed module's own directory, only if it resolves inside external/.
+
+    Never external/ itself, never a local-path or bundled module's directory -- neither resolves
+    inside it -- and never a directory another surviving entry (`keep`) still points at. A failed
+    delete is a warning: the entry is already out of config.json, so a stale directory is
+    recoverable, but aborting the whole removal here would not be.
+    """
+    ext_root = os.path.realpath(os.path.join(base, EXTERNAL_DIR))
+    mod_dir  = external_module_path(entry, base)
+    if mod_dir is None or mod_dir == ext_root or mod_dir in keep:
+        return
+    if os.path.commonpath([ext_root, mod_dir]) != ext_root:
+        return
+    if not os.path.isdir(mod_dir):
+        return
+    try:
+        shutil.rmtree(mod_dir)
+        print(f"[Anvil] Removed directory: {os.path.relpath(mod_dir, base)}")
+    except Exception as e:   # config.json is already saved -- a stale directory beats a crash here
+        print(f"[WARN] could not remove '{name}' directory ({mod_dir}): {e}")
+
 def migrate_config(cfg):
     """Bring a config up to schema 2.0, returning (config, changed); never fetches -- schema 1 refs are never URLs."""
     if cfg.get("schema") == SCHEMA:
@@ -1193,16 +1220,34 @@ def cmd_addmodule(args):
             to_add[p["name"]] = module_entry(p["version"], p["source"], p["path"], p["after"])
             added_keys.append(f"{p['name']}@{p['version']}")
 
-    bundled_refs, external_refs = [], []
+    bundled_refs, external_refs, local_refs = [], [], {}
     for ref in other_refs:
-        (external_refs if fetch.classify(ref) == "url" else bundled_refs).append(ref)
+        kind = fetch.classify(ref)
+        if kind == "url":
+            external_refs.append(ref)
+        elif kind == "path" and not is_path_dep(ref):
+            # is_path_dep only recognizes ./ and ../, deliberately, for module.json's depends
+            # convention -- alias a CLI argument that is absolute or ~ into that shape just to
+            # reuse resolve_deps, then restore the literal ref the user typed below
+            alias = os.path.relpath(os.path.expanduser(ref), os.getcwd())
+            if not alias.startswith(".."):
+                alias = os.path.join(".", alias)
+            local_refs[alias] = ref
+            bundled_refs.append(alias)
+        else:
+            bundled_refs.append(ref)
 
     for mod in bundled_refs:
         chain = resolve_deps(mod, registry, base_dir=os.getcwd())
         for (key, mod_dir, meta) in chain:
             name = meta["name"]
             if name not in current and name not in to_add:
-                to_add[name] = make_entry(key, mod_dir, meta)
+                entry = make_entry(key, mod_dir, meta)
+                if key in local_refs:
+                    # path stays the resolvable alias -- only source shows the literal ref typed
+                    entry["source"] = local_refs[key]
+                    key = local_refs[key]
+                to_add[name] = entry
                 added_keys.append(key)
 
     if external_refs:
@@ -1321,6 +1366,10 @@ def cmd_removemodule(args):
     removed = [n for n in current if n in to_remove]
     config["modules"] = {n: e for n, e in current.items() if n not in to_remove}
     save_config(config)
+
+    keep = {p for p in (external_module_path(e, base) for e in config["modules"].values()) if p}
+    for name in removed:
+        delete_fetched_directory(name, current[name], base, keep)
 
     stale = [n for n, e in config["modules"].items() if local_dir_missing(entry_ref(n, e), base)]
     if stale:

@@ -2267,5 +2267,226 @@ class TestScaffoldGitInitFailure(TempCase):
         self.assertTrue(os.path.isfile("top.sv") or os.path.isfile("top.v"))
 
 
+class TestAddmoduleAbsolutePath(TempCase):
+    def test_absolute_path_is_treated_as_a_local_module(self):
+        # a module directory outside the project, referenced absolutely
+        mod = os.path.join(self.tmp, "mod")
+        os.makedirs(mod)
+        with open(os.path.join(mod, "module.json"), "w") as f:
+            f.write('{"name":"absmod","version":"1.0.0"}')
+        with open(os.path.join(mod, "absmod.v"), "w") as f:
+            f.write("module absmod; endmodule\n")
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule([mod, "--yes"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertIn("absmod", cfg["modules"])
+        self.assertEqual(cfg["modules"]["absmod"]["source"], mod)
+        # path stays a cwd-relative alias -- like any other local module, it resolves from proj/
+        self.assertEqual(os.path.normpath(os.path.join(proj, cfg["modules"]["absmod"]["path"])), mod)
+
+    def test_absolute_path_walks_its_own_bundled_dependency(self):
+        mod = os.path.join(self.tmp, "mod2")
+        os.makedirs(mod)
+        with open(os.path.join(mod, "module.json"), "w") as f:
+            json.dump({"name": "absmod2", "version": "1.0.0", "depends": ["uart"]}, f)
+        with open(os.path.join(mod, "top.v"), "w") as f:
+            f.write("module absmod2; endmodule\n")
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_addmodule([mod, "--yes"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+        self.assertIn("absmod2", cfg["modules"])
+        self.assertIn("uart", cfg["modules"])
+
+    def test_absolute_path_without_module_json_is_a_sensible_error(self):
+        # the old bug reported this as an unknown registry name -- it is a directory on disk
+        empty = os.path.join(self.tmp, "not-a-module")
+        os.makedirs(empty)
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.cmd_addmodule([empty])
+        text = out.getvalue()
+        self.assertNotIn("Unknown module", text)
+        self.assertIn("module.json not found", text)
+
+
+class TestRemoveModuleDeletesFetchedDirectory(TempCase):
+    def _add_fetched(self, proj, name, filename):
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta(name)),
+                ("pkg/top.v", b"module m; endmodule"),
+            ], name=filename)
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/{filename}"])
+
+    def test_a_fetched_module_is_removed_from_disk(self):
+        proj = _scaffold_project(self.tmp)
+        self._add_fetched(proj, "fifo", "fifo.tar.gz")
+        with open("config.json") as f:
+            path = json.load(f)["modules"]["fifo"]["path"]
+        self.assertTrue(os.path.isdir(path))
+
+        with capture():
+            anvil.cmd_removemodule(["fifo"])
+
+        self.assertFalse(os.path.exists(path))
+        self.assertTrue(os.path.isdir(anvil.EXTERNAL_DIR))   # the parent survives
+        with open("config.json") as f:
+            self.assertNotIn("fifo", json.load(f)["modules"])
+
+    def test_a_local_path_module_is_never_deleted_from_disk(self):
+        # its directory is the user's own, outside external/
+        proj = _scaffold_project(self.tmp)
+        mymod = _make_local_module(self.tmp, "mymod")
+        os.chdir(proj)
+        with capture():
+            anvil.cmd_addmodule(["../mymod"])
+
+        with capture():
+            anvil.cmd_removemodule(["../mymod"])
+
+        self.assertTrue(os.path.isdir(mymod))
+        with open("config.json") as f:
+            self.assertNotIn("mymod", json.load(f)["modules"])
+
+    def test_a_bundled_module_is_never_deleted_from_disk(self):
+        # it lives in the Anvil installation and is shared by every project
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_addmodule(["uart"])
+        bundled_dir = os.path.join(anvil.MODULES_DIR, "uart@1.0.0")
+        self.assertTrue(os.path.isdir(bundled_dir))
+
+        # config.json is saved before build_makefile's sv2v step, which this sandbox has no
+        # toolchain for; a SystemExit there is not what's under test (see TestModulesSchemaIntegration)
+        with capture(), contextlib.suppress(SystemExit):
+            anvil.cmd_removemodule(["uart"])
+
+        self.assertTrue(os.path.isdir(bundled_dir))
+        with open("config.json") as f:
+            self.assertNotIn("uart", json.load(f)["modules"])
+
+    def test_directory_already_gone_is_not_an_error(self):
+        proj = _scaffold_project(self.tmp)
+        self._add_fetched(proj, "fifo", "fifo.tar.gz")
+        with open("config.json") as f:
+            path = json.load(f)["modules"]["fifo"]["path"]
+        shutil.rmtree(path)
+
+        with capture():
+            anvil.cmd_removemodule(["fifo"])
+
+        with open("config.json") as f:
+            self.assertNotIn("fifo", json.load(f)["modules"])
+
+    def test_failed_deletion_is_a_warning_not_a_failure(self):
+        proj = _scaffold_project(self.tmp)
+        self._add_fetched(proj, "fifo", "fifo.tar.gz")
+        real_rmtree = anvil.shutil.rmtree
+        anvil.shutil.rmtree = lambda *a, **k: (_ for _ in ()).throw(OSError("simulated"))
+        try:
+            with capture() as out:
+                anvil.cmd_removemodule(["fifo"])
+        finally:
+            anvil.shutil.rmtree = real_rmtree
+
+        self.assertIn("WARN", out.getvalue())
+        with open("config.json") as f:
+            self.assertNotIn("fifo", json.load(f)["modules"])
+
+    def test_one_failed_deletion_does_not_block_the_others(self):
+        proj = _scaffold_project(self.tmp)
+        self._add_fetched(proj, "fifo", "fifo.tar.gz")
+        self._add_fetched(proj, "axi", "axi.tar.gz")
+        with open("config.json") as f:
+            cfg = json.load(f)
+        fifo_path = os.path.abspath(cfg["modules"]["fifo"]["path"])
+        axi_path  = os.path.abspath(cfg["modules"]["axi"]["path"])
+
+        real_rmtree = anvil.shutil.rmtree
+        def faulty(path, *a, **k):
+            if os.path.abspath(path) == fifo_path:
+                raise OSError("simulated")
+            return real_rmtree(path, *a, **k)
+        anvil.shutil.rmtree = faulty
+        try:
+            with capture() as out:
+                anvil.cmd_removemodule(["fifo", "axi"])
+        finally:
+            anvil.shutil.rmtree = real_rmtree
+
+        self.assertTrue(os.path.isdir(fifo_path))
+        self.assertFalse(os.path.exists(axi_path))
+        self.assertIn("WARN", out.getvalue())
+        with open("config.json") as f:
+            cfg2 = json.load(f)
+        self.assertNotIn("fifo", cfg2["modules"])
+        self.assertNotIn("axi", cfg2["modules"])
+
+    def test_two_entries_sharing_a_directory_the_survivor_keeps_it(self):
+        # a corrupted-by-hand config, not something anvil itself would produce --
+        # deleting must still never orphan a module that is staying
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        shared = os.path.join("external", "shared@1.0.0")
+        os.makedirs(shared)
+        with open(os.path.join(shared, "module.json"), "w") as f:
+            json.dump({"name": "shared", "version": "1.0.0"}, f)
+        with open("config.json") as f:
+            cfg = json.load(f)
+        cfg["modules"]["modA"] = {"version": "1.0.0", "source": "https://example.test/a.tar.gz",
+                                   "path": shared, "hash": "sha256:aaaa"}
+        cfg["modules"]["modB"] = {"version": "1.0.0", "source": "https://example.test/b.tar.gz",
+                                   "path": shared, "hash": "sha256:bbbb"}
+        with open("config.json", "w") as f:
+            json.dump(cfg, f)
+
+        with capture():
+            anvil.cmd_removemodule(["modA"])
+
+        self.assertTrue(os.path.isdir(shared))
+        with open("config.json") as f:
+            cfg2 = json.load(f)
+        self.assertNotIn("modA", cfg2["modules"])
+        self.assertIn("modB", cfg2["modules"])
+
+    def test_a_symlinked_module_directory_pointing_outside_external_is_not_deleted(self):
+        # a crafted or stale path must not delete whatever it resolves to outside external/
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        real_target = os.path.join(self.tmp, "real-target")
+        os.makedirs(real_target)
+        with open(os.path.join(real_target, "keepme"), "w") as f:
+            f.write("do not delete")
+        os.makedirs("external")
+        link = os.path.join("external", "evil@1.0.0")
+        os.symlink(real_target, link)
+
+        with open("config.json") as f:
+            cfg = json.load(f)
+        cfg["modules"]["evil"] = {"version": "1.0.0", "source": "https://example.test/evil.tar.gz",
+                                   "path": link, "hash": "sha256:cccc"}
+        with open("config.json", "w") as f:
+            json.dump(cfg, f)
+
+        with capture():
+            anvil.cmd_removemodule(["evil"])
+
+        self.assertTrue(os.path.isfile(os.path.join(real_target, "keepme")))
+        self.assertTrue(os.path.islink(link))
+        with open("config.json") as f:
+            self.assertNotIn("evil", json.load(f)["modules"])
+
+
 if __name__ == "__main__":
     unittest.main()
