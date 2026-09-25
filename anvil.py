@@ -480,6 +480,35 @@ def sv2v_convert(sv_path, out_path):
         rel = os.path.relpath(sv_path, os.getcwd())
         fail(f"sv2v failed on {rel}", (result.stderr or "") + (result.stdout or ""))
 
+def ensure_modules(config):
+    """Every module on disk and hash-matching before a build reads it, or fail saying why.
+
+    Re-fetching does not ask again: config.json already records what was agreed to,
+    and a matching hash is the proof the same code came back.
+    """
+    for name, entry in config.get("modules", {}).items():
+        path  = entry["path"]
+        local = path.replace("$ANVIL_HOME", SCRIPT_DIR) if path.startswith("$ANVIL_HOME") else path
+        if not os.path.isdir(local):
+            if fetch.classify(entry["source"]) != "url":
+                fail(f"module '{name}' is missing",
+                     f"{path} does not exist and '{entry['source']}' cannot be re-fetched")
+            print(f"[Anvil] Fetching {name} from {entry['source']} ...")
+            staging = tempfile.mkdtemp()
+            try:
+                _, _, staged, _ = install_external(entry["source"], staging)
+                os.makedirs(EXTERNAL_DIR, exist_ok=True)
+                shutil.move(staged, local)
+            except (fetch.NoArchiveFound, fetch.InvalidModule, fetch.UnsafeArchive) as e:
+                fail(f"could not re-fetch module '{name}'", f"source: {entry['source']}\n{e}")
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        got = fetch.module_hash(local)
+        if got != entry["hash"]:
+            fail(f"module '{name}' does not match its recorded hash",
+                 f"recorded: {entry['hash']}\n     found: {got}\n"
+                 f"  re-record with: anvil addmodule --force {name}")
+
 def collect_sources(config=None, module_meta=None):
     """
     Discover RTL sources for synth or simulation.
@@ -1406,6 +1435,8 @@ def cmd_synth(args):
     """Synthesize FPGA bitstream."""
     config = load_config()
     target = config["target"]
+
+    ensure_modules(config)   # external/ is git-ignored -- a fresh clone must restore it here
 
     # Regenerate both: a project scaffolded by an older Anvil still has a
     # common.mk that predates its board.

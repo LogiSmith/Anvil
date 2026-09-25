@@ -1648,5 +1648,185 @@ class TestDependencyClosureConsistency(TempCase):
         self.assertIn("picorv32@1.0.0", [k for k, _, _ in resolved])
 
 
+def _archive_of(tmp_path, src_dir, name="a.tar.gz", wrapper="pkg"):
+    """A tar.gz mirroring src_dir's files under one wrapper directory, at tmp_path/name."""
+    p = os.path.join(tmp_path, name)
+    with tarfile.open(p, "w:gz") as t:
+        for root, _, files in os.walk(src_dir):
+            for fn in files:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, src_dir)
+                t.add(full, arcname=os.path.join(wrapper, rel))
+    return p
+
+
+class TestEnsureModules(TempCase):
+    """ensure_modules(config): every module present and hash-matching, or fail saying why."""
+
+    def _cfg(self, **modules):
+        return {"schema": "2.0", "modules": modules}
+
+    def test_missing_url_module_is_refetched(self):
+        proj = _scaffold_project(self.tmp)
+        srv  = os.path.join(self.tmp, "srv")
+        os.makedirs(srv)
+        m = _make_module(srv)
+        expected = fetch.module_hash(m)
+        _archive_of(srv, m)
+        os.chdir(proj)
+
+        with serve(srv) as base_url:
+            cfg = self._cfg(m={"version": "1.0.0", "source": f"{base_url}/a.tar.gz",
+                                "path": os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"),
+                                "hash": expected})
+            with capture() as out:
+                anvil.ensure_modules(cfg)
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "module.json")))
+        self.assertIn("m", out.getvalue())
+
+    def test_hash_mismatch_is_an_error(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        recorded = fetch.module_hash(d)
+        with open(os.path.join(d, "top.v"), "w") as f:
+            f.write("module m; wire tampered; endmodule\n")   # edited after recording
+
+        cfg = self._cfg(m={"version": "1.0.0", "source": "../m", "path": "../m", "hash": recorded})
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.ensure_modules(cfg)
+        text = out.getvalue().lower()
+        self.assertIn("hash", text)
+        self.assertIn("m", text)
+
+    def test_missing_local_module_cannot_be_refetched(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        cfg = self._cfg(m={"version": "1.0.0", "source": "../gone",
+                            "path": "../gone", "hash": "sha256:00"})
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.ensure_modules(cfg)
+        self.assertIn("../gone", out.getvalue())
+
+    def test_missing_bundled_module_cannot_be_refetched(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        path = "$ANVIL_HOME/modules/doesnotexist@9.9.9"
+        cfg = self._cfg(m={"version": "9.9.9", "source": "system",
+                            "path": path, "hash": "sha256:00"})
+        with capture() as out:
+            with self.assertRaises(SystemExit):
+                anvil.ensure_modules(cfg)
+        self.assertIn(path, out.getvalue())
+
+    def test_present_module_with_matching_hash_is_left_alone(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        digest = fetch.module_hash(d)
+        cfg = self._cfg(m={"version": "1.0.0", "source": "../m", "path": "../m", "hash": digest})
+        with capture() as out:
+            anvil.ensure_modules(cfg)   # must not raise
+        self.assertEqual(out.getvalue(), "")
+
+    def test_only_the_missing_module_among_several_is_refetched(self):
+        proj = _scaffold_project(self.tmp)
+        srv  = os.path.join(self.tmp, "srv")
+        os.makedirs(srv)
+        present = _make_local_module(self.tmp, "present")
+        present_hash = fetch.module_hash(present)
+        missing_src = _make_module(srv)
+        missing_hash = fetch.module_hash(missing_src)
+        _archive_of(srv, missing_src)
+        os.chdir(proj)
+
+        with serve(srv) as base_url:
+            cfg = self._cfg(
+                present={"version": "1.0.0", "source": "../present", "path": "../present",
+                          "hash": present_hash},
+                m={"version": "1.0.0", "source": f"{base_url}/a.tar.gz",
+                   "path": os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"), "hash": missing_hash},
+            )
+            with capture() as out:
+                anvil.ensure_modules(cfg)
+        text = out.getvalue()
+        self.assertEqual(text.count("Fetching"), 1)
+        self.assertIn("m", text)
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "top.v")))
+
+    def test_refetch_failure_reports_cleanly(self):
+        proj = _scaffold_project(self.tmp)
+        srv  = os.path.join(self.tmp, "srv")
+        os.makedirs(srv)
+        os.chdir(proj)
+
+        with serve(srv) as base_url:   # nothing served -- every candidate 404s
+            cfg = self._cfg(m={"version": "1.0.0", "source": f"{base_url}/nope.tar.gz",
+                                "path": os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"),
+                                "hash": "sha256:00"})
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.ensure_modules(cfg)
+        self.assertIn("m", out.getvalue())
+        self.assertFalse(os.path.isdir(anvil.EXTERNAL_DIR))
+
+    def test_refetched_content_hashing_differently_is_still_caught(self):
+        proj = _scaffold_project(self.tmp)
+        srv  = os.path.join(self.tmp, "srv")
+        os.makedirs(srv)
+        m = _make_module(srv)
+        _archive_of(srv, m)
+        os.chdir(proj)
+
+        with serve(srv) as base_url:
+            cfg = self._cfg(m={"version": "1.0.0", "source": f"{base_url}/a.tar.gz",
+                                "path": os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"),
+                                "hash": "sha256:" + "0" * 64})   # not what the archive contains
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.ensure_modules(cfg)
+        text = out.getvalue().lower()
+        self.assertIn("hash", text)
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "module.json")))
+
+    def test_no_modules_is_a_no_op(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with capture() as out:
+            anvil.ensure_modules(self._cfg())
+        self.assertEqual(out.getvalue(), "")
+
+
+class TestEnsureModulesViaCmdSynth(TempCase):
+    """The real entry point: a student's clone has config.json but no external/."""
+
+    def test_cmd_synth_restores_a_deleted_external_module(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("m", "1.0.0")),
+                ("pkg/top.v", b"module m; endmodule"),
+            ], name="m.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/m.tar.gz"])
+
+            self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "top.v")))
+            shutil.rmtree(anvil.EXTERNAL_DIR)   # simulate a fresh clone: git-ignored, so absent
+
+            # the re-fetch inside cmd_synth needs the server still up -- stays in this block
+            with capture() as out:
+                with contextlib.suppress(SystemExit):   # sandbox has no F4PGA toolchain -- expected
+                    anvil.cmd_synth([])
+
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "top.v")))
+        self.assertIn("Fetching m", out.getvalue())
+        with open("Makefile") as f:
+            self.assertIn("m@1.0.0", f.read())
+
+
 if __name__ == "__main__":
     unittest.main()
