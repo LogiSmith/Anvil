@@ -120,6 +120,23 @@ def anvil_home_path(path):
     """A recorded path with $ANVIL_HOME resolved to this installation -- the one place that substitution happens."""
     return path.replace("$ANVIL_HOME", SCRIPT_DIR) if path.startswith("$ANVIL_HOME") else path
 
+def entry_dir(entry):
+    """Where this entry's code sits on disk, $ANVIL_HOME expanded -- the one place a recorded path becomes a directory."""
+    return anvil_home_path(entry["path"])
+
+def entry_dir_present(entry):
+    """True if this entry's code is on disk -- only that; whether a build could restore it is can_refetch's question."""
+    return os.path.isdir(entry_dir(entry))
+
+def can_refetch(entry):
+    """True if a build can restore this entry by fetching it -- the one rule for which entry kinds anvil build can fix."""
+    source = entry.get("source")
+    return isinstance(source, str) and fetch.classify(source) == "url"
+
+def missing_detail(entry):
+    """Why a build cannot restore this entry -- one sentence, so the build path and the read-only commands cannot drift."""
+    return f"{entry['path']} does not exist and '{entry.get('source')}' cannot be re-fetched"
+
 def make_entry(key, mod_dir, meta):
     """A schema-2 entry for a module already resolved via load_module_meta/resolve_deps."""
     version = meta.get("version", "1.0.0")
@@ -398,7 +415,8 @@ def resolve_version(name, requested_version, registry):
         sys.exit(1)
     return requested_version
 
-def load_module_meta(dep, base_dir=None):
+def load_module_meta(dep, base_dir=None, required=True):
+    """(meta, dir, key) for a module; required=False returns meta None when module.json is missing or unreadable, instead of exiting."""
     if is_path_dep(dep):
         base    = base_dir or os.getcwd()
         mod_dir = os.path.normpath(os.path.join(base, dep))
@@ -412,11 +430,40 @@ def load_module_meta(dep, base_dir=None):
 
     meta_path = os.path.join(mod_dir, "module.json")
     if not os.path.exists(meta_path):
+        if not required:
+            return None, mod_dir, key
         print(f"[ERROR] module.json not found: {meta_path}")
         sys.exit(1)
-    with open(meta_path) as f:
-        meta = json.load(f)
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        if required:
+            raise
+        return None, mod_dir, key
     return meta, mod_dir, key
+
+NOT_FETCHED = "not fetched"
+MISSING     = "missing"
+UNUSABLE    = "unusable"
+EXTERNAL_ONLY = "a fetched module is only ever written inside external/"
+PROBLEM_LABEL = {NOT_FETCHED: "Unfetched", MISSING: "Missing", UNUSABLE: "Unusable"}
+
+def entry_module(name, entry, base):
+    """(meta, problem): a usable module's module.json, or None and the (state, what to do) pair both read-only commands print."""
+    if not entry_dir_present(entry):
+        if not can_refetch(entry):
+            return None, (MISSING, missing_detail(entry))
+        if not inside_external(entry_dir(entry), base):
+            return None, (UNUSABLE, f"{entry['path']} is outside external/; {EXTERNAL_ONLY}")
+        return None, (NOT_FETCHED, "run: anvil build")
+    meta, _, _ = load_module_meta(entry_ref(name, entry), required=False)
+    if meta is not None:
+        return meta, None
+    detail = f"no readable module.json in {entry['path']}"
+    if can_refetch(entry) and inside_external(entry_dir(entry), base):
+        detail += "; delete it, then: anvil build"
+    return None, (UNUSABLE, detail)
 
 def resolve_deps(dep, registry, resolved=None, seen=None, base_dir=None):
     if resolved is None: resolved = []
@@ -545,15 +592,14 @@ def ensure_modules(config):
     base = os.getcwd()
     for name, entry in config.get("modules", {}).items():
         path  = entry["path"]
-        local = anvil_home_path(path)
-        if not os.path.isdir(local):
-            if fetch.classify(entry["source"]) != "url":
-                fail(f"module '{name}' is missing",
-                     f"{path} does not exist and '{entry['source']}' cannot be re-fetched")
+        local = entry_dir(entry)
+        if not entry_dir_present(entry):
+            if not can_refetch(entry):
+                fail(f"module '{name}' is missing", missing_detail(entry))
             dest = inside_external(local, base)
             if dest is None:   # before the fetch, so a crafted config cannot even make Anvil ask for the archive
                 fail(f"module '{name}' records a path outside external/",
-                     f"path: {path}\na fetched module is only ever written inside external/")
+                     f"path: {path}\n{EXTERNAL_ONLY}")
             print(f"[Anvil] Fetching {name} from {entry['source']} ...")
             staging = tempfile.mkdtemp()
             try:
@@ -1430,8 +1476,13 @@ def cmd_modules(args):
         print(f"[Anvil] Modules in '{config['project']}':")
         if current:
             for name, entry in current.items():
-                meta, _, _ = load_module_meta(entry_ref(name, entry))
-                print(f"  + {name:<25} {meta.get('description', '')}")
+                meta, problem = entry_module(name, entry, os.getcwd())
+                if problem:
+                    state, detail = problem
+                    desc = yellow(f"({state} -- {detail})")
+                else:
+                    desc = meta.get("description", "")
+                print(f"  + {name:<25} {desc}")
         else:
             print("  (none)")
         print()
@@ -1784,8 +1835,18 @@ def cmd_status(args):
     bit = find_bitstream(config["target"])
     mods = config.get("modules", {})
 
-    resolved = get_resolved_modules(config)
-    soc_dir, soc_cfg, soc_key = find_soc_module(resolved)
+    problems = {}
+    for name, entry in mods.items():
+        _, problem = entry_module(name, entry, os.getcwd())
+        if problem:
+            problems[name] = problem
+    if problems:
+        states = {state for state, _ in problems.values()}
+        worst  = next(s for s in (UNUSABLE, MISSING, NOT_FETCHED) if s in states)
+        soc    = yellow(f"unknown -- modules {worst}")
+    else:
+        _, _, soc_key = find_soc_module(get_resolved_modules(config))
+        soc = soc_key or "none"
 
     has_fw = os.path.isdir(FW_SRC)
     fw_built = os.path.exists(os.path.join(BUILD_FW_DIR, "ram.v"))
@@ -1793,10 +1854,12 @@ def cmd_status(args):
     print(f"[Anvil] Project   : {config['project']}")
     print(f"       Board     : {config['board']} -- {config['description']}")
     print(f"       Modules   : {', '.join(mods) if mods else 'none'}")
-    print(f"       SoC       : {soc_key or 'none'}")
+    print(f"       SoC       : {soc}")
     print(f"       Params    : {config.get('params', {})}")
     print(f"       Firmware  : {'present' if has_fw else 'none'} {'(built)' if fw_built else ''}")
     print(f"       Bitstream : {bit or 'not built'}")
+    for name, (state, detail) in problems.items():
+        print(yellow(f"       {PROBLEM_LABEL[state]:<9} : {name} -- {detail}"))
 
 def _which(*names):
     """First resolvable binary among names (PATH lookup), else None."""

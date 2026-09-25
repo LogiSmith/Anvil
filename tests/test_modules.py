@@ -3229,5 +3229,351 @@ class TestAddmoduleSelfHostedAtRef(TempCase):
         self.assertEqual(entry["source"], f"{base_url}/fifo@v1.0.0.tar.gz")
 
 
+class TestReadOnlyCommandsOnIncompleteModules(TempCase):
+    """Modules absent or present-but-unusable: the read-only commands report both states and agree, the build commands still refuse."""
+
+    def _project(self, base_url, name="m", soc=False):
+        """A project recording one URL module, fetched -- the healthy starting point."""
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        files = [("pkg/module.json", json.dumps({"name": name, "version": "1.0.0",
+                                                 "description": "a small fifo"}).encode()),
+                 ("pkg/top.v", f"module {name}; endmodule".encode())]
+        if soc:
+            files.append(("pkg/soc.json", json.dumps({"cpu": {"compiler": "gcc"}}).encode()))
+        _tar_with(self.tmp, files, name=f"{name}.tar.gz")
+        with capture():
+            anvil.cmd_addmodule(["--yes", f"{base_url}/{name}.tar.gz"])
+        with open(anvil.CONFIG_FILE) as f:
+            cfg = json.load(f)
+        cfg["description"] = "Artix-7 dev board"   # anvil init always writes one; _scaffold_project does not
+        with open(anvil.CONFIG_FILE, "w") as f:
+            json.dump(cfg, f)
+        return proj
+
+    def _fresh_clone(self, base_url, **kw):
+        proj = self._project(base_url, **kw)
+        shutil.rmtree(anvil.EXTERNAL_DIR)   # external/ is git-ignored, so a clone arrives without it
+        return proj
+
+    def test_modules_lists_an_unfetched_module_and_names_the_fix(self):
+        with serve(self.tmp) as base_url:
+            self._fresh_clone(base_url)
+        with capture() as out:
+            anvil.cmd_modules([])
+        text = out.getvalue()
+        self.assertRegex(text, r"\+ m\s+.*not fetched")
+        self.assertRegex(text, r"\+ m\s+.*anvil build")
+        self.assertNotIn("module.json not found", text)
+
+    def test_status_reports_the_unfetched_module_instead_of_exiting(self):
+        with serve(self.tmp) as base_url:
+            self._fresh_clone(base_url)
+        with capture() as out:
+            anvil.cmd_status([])
+        text = out.getvalue()
+        self.assertIn("Nexys-A7-50T", text)
+        self.assertRegex(text, r"Modules\s+:.*\bm\b")
+        self.assertRegex(text, r"\bm\b.*anvil build")
+        self.assertIn("Bitstream", text)
+        self.assertNotRegex(text, r"SoC\s*:\s*none")
+        self.assertNotIn("module.json not found", text)
+
+    def test_healthy_project_modules_output_is_unchanged(self):
+        with serve(self.tmp) as base_url:
+            self._project(base_url)
+        with capture() as out:
+            anvil.cmd_modules([])
+        text = out.getvalue()
+        self.assertRegex(text, r"\+ m\s+a small fifo")
+        self.assertNotIn("not fetched", text)
+
+    def test_healthy_project_status_still_prints_the_soc_line(self):
+        with serve(self.tmp) as base_url:
+            self._project(base_url)
+        with capture() as out:
+            anvil.cmd_status([])
+        text = out.getvalue()
+        self.assertIn("       SoC       : none", text)
+        self.assertNotIn("not fetched", text)
+
+    def test_healthy_soc_project_still_names_its_soc(self):
+        with serve(self.tmp) as base_url:
+            self._project(base_url, name="soc", soc=True)
+        with capture() as out:
+            anvil.cmd_status([])
+        self.assertRegex(out.getvalue(), r"SoC\s+: \S*soc@1\.0\.0")
+
+    def test_synth_on_the_same_fresh_clone_still_fetches(self):
+        with serve(self.tmp) as base_url:
+            self._fresh_clone(base_url)
+            with capture() as out:
+                with contextlib.suppress(SystemExit):   # sandbox has no F4PGA toolchain -- expected past the fetch
+                    anvil.cmd_synth([])
+        self.assertIn("Fetching m", out.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "top.v")))
+
+    def test_build_commands_still_refuse_where_the_read_only_ones_carry_on(self):
+        with serve(self.tmp) as base_url:
+            self._fresh_clone(base_url)
+        os.makedirs(anvil.TB_DIR)
+        with open(os.path.join(anvil.TB_DIR, "m_tb.v"), "w") as f:
+            f.write("module m_tb; endmodule\n")
+
+        with capture():
+            anvil.cmd_modules([])
+            anvil.cmd_status([])
+
+        for cmd, argv in ((anvil.cmd_synth, []), (anvil.cmd_test, ["tb/m_tb.v"])):
+            with capture() as out:
+                with self.assertRaises(SystemExit) as ctx:
+                    cmd(argv)
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertIn("m", out.getvalue())
+            self.assertFalse(os.path.isdir(anvil.EXTERNAL_DIR))
+
+
+    def _broken_clone(self, base_url, body=None):
+        """A module whose directory survives without a readable module.json -- fetched and broken, not absent."""
+        proj = self._project(base_url)
+        meta = os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "module.json")
+        os.remove(meta)
+        if body is not None:
+            with open(meta, "w") as f:
+                f.write(body)
+        with open(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "stray.v"), "w") as f:
+            f.write("module m(); endmodule\n")
+        return proj
+
+    def test_modules_calls_a_broken_directory_unusable_not_unfetched(self):
+        with serve(self.tmp) as base_url:
+            self._broken_clone(base_url)
+        with capture() as out:
+            anvil.cmd_modules([])
+        text = out.getvalue()
+        self.assertRegex(text, r"\+ m\s+.*unusable")
+        self.assertIn("no readable module.json in external/m@1.0.0", text)
+        self.assertIn("delete it, then: anvil build", text)
+        self.assertNotIn("not fetched", text)
+
+    def test_modules_survives_a_malformed_module_json(self):
+        with serve(self.tmp) as base_url:
+            self._broken_clone(base_url, body="{ this is not json")
+        with capture() as out:
+            anvil.cmd_modules([])
+        text = out.getvalue()
+        self.assertRegex(text, r"\+ m\s+.*unusable")
+        self.assertIn("no readable module.json in external/m@1.0.0", text)
+        self.assertNotIn("not fetched", text)
+
+    def test_status_reports_a_broken_directory_without_exiting(self):
+        with serve(self.tmp) as base_url:
+            self._broken_clone(base_url)
+        with capture() as out:
+            anvil.cmd_status([])
+        text = out.getvalue()
+        self.assertIn("Unusable", text)
+        self.assertIn("m -- no readable module.json in external/m@1.0.0", text)
+        self.assertNotRegex(text, r"SoC\s*:\s*none")
+        self.assertNotIn("not fetched", text)
+        self.assertNotIn("[ERROR]", text)
+
+    def test_the_two_read_only_commands_agree_on_a_broken_directory(self):
+        with serve(self.tmp) as base_url:
+            self._broken_clone(base_url)
+        with capture() as mods_out:
+            anvil.cmd_modules([])
+        with capture() as status_out:
+            anvil.cmd_status([])
+        for text in (mods_out.getvalue(), status_out.getvalue()):
+            self.assertIn("m", text)
+            self.assertIn("unusable", text.lower())
+            self.assertIn("no readable module.json in external/m@1.0.0", text)
+
+    def test_a_local_module_directory_is_never_told_to_delete_itself(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        with capture():
+            anvil.cmd_addmodule(["../m"])
+        os.remove(os.path.join(d, "module.json"))
+        with capture() as out:
+            anvil.cmd_modules([])
+        text = out.getvalue()
+        self.assertIn("no readable module.json in ../m", text)
+        self.assertNotIn("delete", text)
+
+    def test_the_hint_a_broken_directory_prints_actually_recovers_it(self):
+        with serve(self.tmp) as base_url:
+            self._broken_clone(base_url)
+            with capture() as out:
+                anvil.cmd_modules([])
+            self.assertIn("delete it, then: anvil build", out.getvalue())
+            shutil.rmtree(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0"))   # exactly what the hint says to do
+            with capture():
+                with contextlib.suppress(SystemExit):   # sandbox has no F4PGA toolchain -- expected past the fetch
+                    anvil.cmd_build([])
+        self.assertTrue(os.path.isfile(os.path.join(anvil.EXTERNAL_DIR, "m@1.0.0", "module.json")))
+        with capture() as out:
+            anvil.cmd_modules([])
+        self.assertRegex(out.getvalue(), r"\+ m\s+a small fifo")
+
+    def test_build_commands_still_refuse_a_broken_directory(self):
+        with serve(self.tmp) as base_url:
+            self._broken_clone(base_url)
+        os.makedirs(anvil.TB_DIR)
+        with open(os.path.join(anvil.TB_DIR, "m_tb.v"), "w") as f:
+            f.write("module m_tb; endmodule\n")
+        for cmd, argv in ((anvil.cmd_synth, []), (anvil.cmd_test, ["tb/m_tb.v"])):
+            with capture() as out:
+                with self.assertRaises(SystemExit) as ctx:
+                    cmd(argv)
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertIn("hash", out.getvalue().lower())
+
+    def _config_with(self, **modules):
+        """A project whose config records hand-written entries -- the shape a clone arrives in before anything is on disk."""
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with open(anvil.CONFIG_FILE) as f:
+            cfg = json.load(f)
+        cfg["description"] = "Artix-7 dev board"   # anvil init always writes one; _scaffold_project does not
+        cfg["modules"] = modules
+        with open(anvil.CONFIG_FILE, "w") as f:
+            json.dump(cfg, f)
+        return proj
+
+    def test_modules_reports_a_missing_local_module_as_missing(self):
+        self._config_with(m={"version": "1.0.0", "source": "../m", "path": "../m", "hash": "sha256:00"})
+        with capture() as out:
+            anvil.cmd_modules([])
+        text = out.getvalue()
+        self.assertRegex(text, r"\+ m\s+.*missing")
+        self.assertIn("../m does not exist and '../m' cannot be re-fetched", text)
+        self.assertNotIn("not fetched", text)
+        self.assertNotIn("anvil build", text)
+
+    def test_status_reports_a_missing_local_module_as_missing(self):
+        self._config_with(m={"version": "1.0.0", "source": "../m", "path": "../m", "hash": "sha256:00"})
+        with capture() as out:
+            anvil.cmd_status([])
+        text = out.getvalue()
+        self.assertIn("Missing", text)
+        self.assertIn("m -- ../m does not exist and '../m' cannot be re-fetched", text)
+        self.assertIn("unknown -- modules missing", text)
+        self.assertNotIn("anvil build", text)
+
+    def test_a_bundled_module_never_installed_is_missing_in_both_commands(self):
+        path = "$ANVIL_HOME/modules/uart@9.9.9"
+        self._config_with(uart={"version": "9.9.9", "source": "system", "path": path, "hash": "sha256:00"})
+        with capture() as mods_out:
+            anvil.cmd_modules([])
+        with capture() as status_out:
+            anvil.cmd_status([])
+        for text in (mods_out.getvalue(), status_out.getvalue()):
+            self.assertIn("missing", text.lower())
+            self.assertIn(f"{path} does not exist and 'system' cannot be re-fetched", text)
+            self.assertNotIn("not fetched", text)
+            self.assertNotIn("anvil build", text)
+
+    def test_the_three_commands_agree_on_a_directory_no_build_can_restore(self):
+        self._config_with(m={"version": "1.0.0", "source": "../m", "path": "../m", "hash": "sha256:00"})
+        with capture() as mods_out:
+            anvil.cmd_modules([])
+        with capture() as status_out:
+            anvil.cmd_status([])
+        with capture() as build_out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_synth([])
+        self.assertEqual(ctx.exception.code, 1)
+        for text in (mods_out.getvalue(), status_out.getvalue(), build_out.getvalue()):
+            self.assertIn("cannot be re-fetched", text)
+        for text in (mods_out.getvalue(), status_out.getvalue()):
+            self.assertNotIn("anvil build", text)
+
+    def test_modules_survives_a_module_json_of_just_braces(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        with capture():
+            anvil.cmd_addmodule(["../m"])
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write("{}")
+        with capture() as out:
+            anvil.cmd_modules([])
+        self.assertRegex(out.getvalue(), r"\+ m +\n")
+        self.assertNotIn("unusable", out.getvalue())
+
+    def test_status_agrees_on_a_module_json_of_just_braces(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        d = _make_local_module(self.tmp, "m")
+        with capture():
+            anvil.cmd_addmodule(["../m"])
+        with open(os.path.join(d, "module.json"), "w") as f:
+            f.write("{}")
+        with open(anvil.CONFIG_FILE) as f:
+            cfg = json.load(f)
+        cfg["description"] = "Artix-7 dev board"
+        with open(anvil.CONFIG_FILE, "w") as f:
+            json.dump(cfg, f)
+        with capture() as out:
+            anvil.cmd_status([])
+        text = out.getvalue()
+        self.assertIn("Modules   : m", text)
+        self.assertNotIn("Unusable", text)
+        self.assertNotIn("Missing", text)
+
+    def test_a_url_entry_whose_path_escapes_external_is_not_told_to_build(self):
+        self._config_with(m={"version": "1.0.0", "source": "http://127.0.0.1:1/m.tar.gz",
+                             "path": "../outside", "hash": "sha256:00"})
+        with capture() as mods_out:
+            anvil.cmd_modules([])
+        with capture() as status_out:
+            anvil.cmd_status([])
+        with capture() as build_out:
+            with self.assertRaises(SystemExit) as ctx:
+                anvil.cmd_synth([])       # refused on containment, before any request leaves
+        self.assertEqual(ctx.exception.code, 1)
+        for text in (mods_out.getvalue(), status_out.getvalue(), build_out.getvalue()):
+            self.assertIn("a fetched module is only ever written inside external/", text)
+        for text in (mods_out.getvalue(), status_out.getvalue()):
+            self.assertNotIn("run: anvil build", text)
+
+    def test_a_null_source_with_an_absent_directory_is_missing_not_a_traceback(self):
+        self._config_with(m={"version": "1.0.0", "source": None, "path": "../m", "hash": "sha256:00"})
+        with capture() as mods_out:
+            anvil.cmd_modules([])
+        with capture() as status_out:
+            anvil.cmd_status([])
+        for text in (mods_out.getvalue(), status_out.getvalue()):
+            self.assertIn("missing", text.lower())
+            self.assertIn("../m does not exist and 'None' cannot be re-fetched", text)
+
+    def test_a_null_source_with_a_broken_directory_is_unusable_not_a_traceback(self):
+        self._config_with(m={"version": "1.0.0", "source": None, "path": "../m", "hash": "sha256:00"})
+        os.makedirs(os.path.join(self.tmp, "m"))
+        with open(os.path.join(self.tmp, "m", "top.v"), "w") as f:
+            f.write("module m; endmodule\n")
+        with capture() as mods_out:
+            anvil.cmd_modules([])
+        with capture() as status_out:
+            anvil.cmd_status([])
+        for text in (mods_out.getvalue(), status_out.getvalue()):
+            self.assertIn("unusable", text.lower())
+            self.assertIn("no readable module.json in ../m", text)
+            self.assertNotIn("delete it", text)   # a null source is not something a build could re-fetch
+
+    def test_a_non_string_source_is_missing_not_a_traceback(self):
+        self._config_with(m={"version": "1.0.0", "source": 42, "path": "../m", "hash": "sha256:00"})
+        with capture() as mods_out:
+            anvil.cmd_modules([])
+        with capture() as status_out:
+            anvil.cmd_status([])
+        for text in (mods_out.getvalue(), status_out.getvalue()):
+            self.assertIn("missing", text.lower())
+            self.assertIn("../m does not exist and '42' cannot be re-fetched", text)
+
+
 if __name__ == "__main__":
     unittest.main()
