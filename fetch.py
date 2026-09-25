@@ -10,6 +10,7 @@ import re
 import stat
 import tarfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -183,21 +184,16 @@ def split_ref(ref):
         return base[:at], base[at + 1:], sub
     return base, None, sub
 
-def archive_candidates(ref):
-    """Every URL to try for `ref`, in order: as given, extension probes, then forge rewrites."""
-    base, at, _ = split_ref(ref)
-    url = base if base.startswith(("http://", "https://")) else "https://" + base
+def _as_url(base):
+    """A bare `host/path` ref means https -- Anvil never silently downgrades it."""
+    return base if base.startswith(("http://", "https://")) else "https://" + base
 
+def _forge_candidates(url, at):
+    """The archive URLs a forge Anvil knows serves for `at`; empty for every other host."""
     out = []
     def add(u):
         if u not in out:
             out.append(u)
-
-    if at is None:
-        add(url)
-        if not url.endswith(ARCHIVE_EXTS):
-            for ext in ARCHIVE_EXTS:
-                add(url + ext)
 
     m = re.match(r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?"
                  r"(?:/releases/tag/(.+))?/?$", url)
@@ -213,6 +209,39 @@ def archive_candidates(ref):
         owner, repo = m.group(1), m.group(2)
         add(f"https://gitlab.com/{owner}/{repo}/-/archive/{at}/{repo}-{at}.tar.gz")
 
+    return out
+
+def _unknown_forge_host(ref):
+    """The host of `ref` when its `@ref` shorthand reached no forge Anvil knows, else None."""
+    base, at, _ = split_ref(ref)
+    url = _as_url(base)
+    if at is None or _forge_candidates(url, at):
+        return None
+    return urllib.parse.urlsplit(url).netloc
+
+def archive_candidates(ref):
+    """Every URL to try for `ref`, in order: as given, extension probes, then forge rewrites."""
+    base, at, _ = split_ref(ref)
+    url = _as_url(base)
+
+    out = []
+    def add(u):
+        if u not in out:
+            out.append(u)
+
+    def add_with_probes(u):
+        add(u)
+        if not u.endswith(ARCHIVE_EXTS):
+            for ext in ARCHIVE_EXTS:
+                add(u + ext)
+
+    if at is None:
+        add_with_probes(url)
+    for u in _forge_candidates(url, at):
+        add(u)
+    if not out:
+        # an unknown host either bakes the `@ref` into a filename or is a typo -- both beat trying nothing
+        add_with_probes(f"{url}@{at}")
     return out
 
 def _looks_like_archive(url, ctype, head):
@@ -277,8 +306,11 @@ def download_archive(ref, dest_dir):
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
-    raise NoArchiveFound("no archive found for " + ref + "\n    tried:\n      "
-                          + "\n      ".join(tried))
+    msg = "no archive found for " + ref + "\n    tried:\n      " + "\n      ".join(tried)
+    host = _unknown_forge_host(ref)
+    if host:
+        msg += f"\n    no forge rewrite matched this {host} URL -- a direct archive URL always works"
+    raise NoArchiveFound(msg)
 
 class InvalidModule(Exception):
     """An unpacked archive is not a usable Anvil module."""

@@ -384,6 +384,125 @@ class TestArchiveCandidates(unittest.TestCase):
         self.assertIn("https://gitlab.com/ana/fifo/-/archive/v1.2.0/fifo-v1.2.0.tar.gz", c)
 
 
+class TestArchiveCandidatesPinned(unittest.TestCase):
+    """Exact lists for every ref shape that already worked -- anvil.url_dep_candidates matches against these."""
+
+    def test_pins_plain_url(self):
+        self.assertEqual(fetch.archive_candidates("https://x.si/rtl/v1"), [
+            "https://x.si/rtl/v1",
+            "https://x.si/rtl/v1.tar.gz",
+            "https://x.si/rtl/v1.zip",
+            "https://x.si/rtl/v1.tgz",
+            "https://x.si/rtl/v1.tar.xz",
+        ])
+
+    def test_pins_github_release_page(self):
+        self.assertEqual(
+            fetch.archive_candidates("https://github.com/LogiSmith/Anvil/releases/tag/1.1.5"), [
+                "https://github.com/LogiSmith/Anvil/releases/tag/1.1.5",
+                "https://github.com/LogiSmith/Anvil/releases/tag/1.1.5.tar.gz",
+                "https://github.com/LogiSmith/Anvil/releases/tag/1.1.5.zip",
+                "https://github.com/LogiSmith/Anvil/releases/tag/1.1.5.tgz",
+                "https://github.com/LogiSmith/Anvil/releases/tag/1.1.5.tar.xz",
+                "https://github.com/LogiSmith/Anvil/archive/refs/tags/1.1.5.tar.gz",
+                "https://github.com/LogiSmith/Anvil/archive/refs/heads/1.1.5.tar.gz",
+                "https://github.com/LogiSmith/Anvil/archive/1.1.5.tar.gz",
+            ])
+
+    def test_pins_github_at_ref(self):
+        self.assertEqual(fetch.archive_candidates("github.com/ana/fifo@v1.2.0"), [
+            "https://github.com/ana/fifo/archive/refs/tags/v1.2.0.tar.gz",
+            "https://github.com/ana/fifo/archive/refs/heads/v1.2.0.tar.gz",
+            "https://github.com/ana/fifo/archive/v1.2.0.tar.gz",
+        ])
+
+    def test_pins_gitlab_at_ref(self):
+        self.assertEqual(fetch.archive_candidates("gitlab.com/ana/fifo@v1.2.0"), [
+            "https://gitlab.com/ana/fifo/-/archive/v1.2.0/fifo-v1.2.0.tar.gz",
+        ])
+
+    def test_pins_an_at_before_the_last_slash(self):
+        self.assertEqual(fetch.archive_candidates("https://x.si/a@b/c"), [
+            "https://x.si/a@b/c",
+            "https://x.si/a@b/c.tar.gz",
+            "https://x.si/a@b/c.zip",
+            "https://x.si/a@b/c.tgz",
+            "https://x.si/a@b/c.tar.xz",
+        ])
+
+    def test_pins_what_removemodule_matches_a_url_dep_against(self):
+        self.assertEqual(anvil.url_dep_candidates("github.com/ana/fifo@v1.2.0#src/fifo"), [
+            "https://github.com/ana/fifo/archive/refs/tags/v1.2.0.tar.gz#src/fifo",
+            "https://github.com/ana/fifo/archive/refs/heads/v1.2.0.tar.gz#src/fifo",
+            "https://github.com/ana/fifo/archive/v1.2.0.tar.gz#src/fifo",
+        ])
+
+
+class TestArchiveCandidatesUnknownHost(unittest.TestCase):
+    """An `@ref` on a host no forge rewrite knows must still produce something to try."""
+
+    def test_typoed_forge_host_is_not_a_dead_end(self):
+        c = fetch.archive_candidates("https://githb.com/ana/fifo@v1.0.0")
+        self.assertEqual(c, [
+            "https://githb.com/ana/fifo@v1.0.0",
+            "https://githb.com/ana/fifo@v1.0.0.tar.gz",
+            "https://githb.com/ana/fifo@v1.0.0.zip",
+            "https://githb.com/ana/fifo@v1.0.0.tgz",
+            "https://githb.com/ana/fifo@v1.0.0.tar.xz",
+        ])
+
+    def test_a_filename_containing_an_at_keeps_its_own_extension(self):
+        c = fetch.archive_candidates("https://files.example.org/fifo@1.2.0.tar.gz")
+        self.assertEqual(c, ["https://files.example.org/fifo@1.2.0.tar.gz"])
+
+    def test_self_hosted_forge_gets_the_ref_as_written(self):
+        c = fetch.archive_candidates("git.example.org/ana/fifo@v1.0.0")
+        self.assertEqual(c[0], "https://git.example.org/ana/fifo@v1.0.0")
+        self.assertIn("https://git.example.org/ana/fifo@v1.0.0.tar.gz", c)
+
+    def test_a_subpath_never_reaches_the_candidates(self):
+        c = fetch.archive_candidates("https://githb.com/ana/fifo@v1.0.0#src/fifo")
+        self.assertEqual(c[0], "https://githb.com/ana/fifo@v1.0.0")
+        self.assertFalse([u for u in c if "#" in u])
+
+    def test_a_github_url_no_rewrite_matches_falls_back_too(self):
+        c = fetch.archive_candidates("github.com/ana/fifo/extra@v1")
+        self.assertEqual(c[0], "https://github.com/ana/fifo/extra@v1")
+        self.assertIn("https://github.com/ana/fifo/extra@v1.tar.gz", c)
+
+    def test_only_an_unknown_host_with_a_ref_is_reported_as_unknown(self):
+        self.assertEqual(fetch._unknown_forge_host("https://githb.com/ana/fifo@v1.0.0"), "githb.com")
+        self.assertIsNone(fetch._unknown_forge_host("github.com/ana/fifo@v1.2.0"))
+        self.assertIsNone(fetch._unknown_forge_host("gitlab.com/ana/fifo@v1.2.0"))
+        self.assertIsNone(fetch._unknown_forge_host("https://x.si/rtl/v1"))
+
+
+class TestDownloadArchiveUnknownForgeHost(TempCase):
+    def test_a_self_hosted_at_ref_resolves_through_the_fallback(self):
+        _tar_with(self.tmp, [("m/top.v", b"x")], name="fifo@v1.0.0.tar.gz")
+        with serve(self.tmp) as base_url:
+            got, resolved = fetch.download_archive(f"{base_url}/fifo@v1.0.0",
+                                                     os.path.join(self.tmp, "dl"))
+        self.assertTrue(os.path.isfile(got))
+        self.assertEqual(resolved, f"{base_url}/fifo@v1.0.0.tar.gz")
+
+    def test_failure_names_the_host_and_points_at_a_direct_url(self):
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.NoArchiveFound) as ctx:
+                fetch.download_archive(f"{base_url}/ana/fifo@v9", os.path.join(self.tmp, "dl"))
+        msg = str(ctx.exception)
+        self.assertIn(f"{base_url}/ana/fifo@v9", msg)
+        hint = msg.splitlines()[-1]
+        self.assertIn(base_url.split("//", 1)[1], hint)
+        self.assertIn("direct archive URL", hint)
+
+    def test_a_plain_url_failure_keeps_the_message_it_had(self):
+        with serve(self.tmp) as base_url:
+            with self.assertRaises(fetch.NoArchiveFound) as ctx:
+                fetch.download_archive(f"{base_url}/ghost", os.path.join(self.tmp, "dl"))
+        self.assertNotIn("direct archive URL", str(ctx.exception))
+
+
 class TestLooksLikeArchive(unittest.TestCase):
     def test_trusts_gzip_magic_over_a_wrong_content_type(self):
         self.assertTrue(fetch._looks_like_archive(
@@ -3089,6 +3208,25 @@ class TestAddModuleFetchFailure(TempCase):
         self.assertTrue(self._made)
         for d in self._made:
             self.assertFalse(os.path.exists(d))
+
+
+class TestAddmoduleSelfHostedAtRef(TempCase):
+    """The design's lead story: a forge Anvil has never heard of, reached by `@ref` shorthand."""
+
+    def test_at_ref_on_an_unknown_host_installs(self):
+        _tar_with(self.tmp, [
+            ("pkg/module.json", _mod_meta("fifo", "1.0.0")),
+            ("pkg/top.v", b"module fifo; endmodule"),
+        ], name="fifo@v1.0.0.tar.gz")
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo@v1.0.0"])
+        self.assertTrue(os.path.isfile(os.path.join("external", "fifo@1.0.0", "module.json")))
+        with open("config.json") as f:
+            entry = json.load(f)["modules"]["fifo"]
+        self.assertEqual(entry["source"], f"{base_url}/fifo@v1.0.0.tar.gz")
 
 
 if __name__ == "__main__":
