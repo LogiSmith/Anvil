@@ -86,27 +86,37 @@ by which host it is — this is what keeps a self-hosted forge working without
 Anvil knowing it exists. `git` is never invoked: a plain git server has no
 archive endpoint, and a direct archive link works there just as well.
 
-1. Request the URL as given. If the response is one of the archive content
-   types (`application/gzip`, `application/x-gzip`, `application/zip`,
-   `application/x-tar`), use it.
-2. Otherwise, append each of `.tar.gz`, `.zip`, `.tgz`, `.tar.xz` in turn and
-   retry — first archive wins.
-3. Otherwise, if the URL matches a known forge shape, rewrite it and retry
-   from step 1:
+1. If the ref carries no `@ref` — a plain URL, or a
+   `.../releases/tag/<ref>` URL, which already has one built in — request it
+   as given, then with each of `.tar.gz`, `.zip`, `.tgz`, `.tar.xz` appended
+   in turn. This step is skipped entirely when `@ref` is present:
+   `owner/repo@ref` isn't itself a URL, so there's nothing literal to try.
+2. If the response to any of those is one of the archive content types
+   (`application/gzip`, `application/x-gzip`, `application/zip`,
+   `application/x-tar`), use it — first archive wins.
+3. If the URL matches a known forge shape and carries a ref (`@ref`, or a
+   `/releases/tag/<ref>` path), also try that forge's own archive URLs for
+   it, in order:
 
-   | You write | Anvil fetches |
+   | You write | Anvil tries, in order |
    |---|---|
-   | `github.com/<owner>/<repo>@<ref>` | `github.com/<owner>/<repo>/archive/refs/tags/<ref>.tar.gz` |
-   | `github.com/<owner>/<repo>/releases/tag/<ref>` | `github.com/<owner>/<repo>/archive/refs/tags/<ref>.tar.gz` |
-   | `gitlab.com/<owner>/<repo>@<ref>` | `gitlab.com/<owner>/<repo>/-/archive/<ref>/<repo>-<ref>.tar.gz` |
+   | `github.com/<owner>/<repo>@<ref>` | `.../archive/refs/tags/<ref>.tar.gz`, then `.../archive/refs/heads/<ref>.tar.gz`, then `.../archive/<ref>.tar.gz` |
+   | `github.com/<owner>/<repo>/releases/tag/<ref>` | the same three, using that `<ref>` |
+   | `gitlab.com/<owner>/<repo>@<ref>` | `.../-/archive/<ref>/<repo>-<ref>.tar.gz` |
+
+   The three GitHub candidates exist because `<ref>` might name a tag or a
+   branch — Anvil doesn't ask which; it tries a tag path, then a branch path,
+   then a bare ref, and uses whichever comes back as an archive first.
 
    Checked live against real repositories while writing this page:
-   `github.com/pallets/flask@3.0.0` resolved to
-   `https://github.com/pallets/flask/archive/refs/tags/3.0.0.tar.gz`, and
-   `gitlab.com/gitlab-org/gitlab-test@v1.1.1` resolved to
+   `github.com/pallets/flask@3.0.0` carries `@ref`, so step 1 was skipped and
+   only these three were tried — it resolved on the first,
+   `https://github.com/pallets/flask/archive/refs/tags/3.0.0.tar.gz`.
+   `gitlab.com/gitlab-org/gitlab-test@v1.1.1` resolved the same way, to
    `https://gitlab.com/gitlab-org/gitlab-test/-/archive/v1.1.1/gitlab-test-v1.1.1.tar.gz`.
 
-4. Otherwise, fail — the error lists every URL that was tried.
+4. If nothing tried turned out to be an archive, fail — the error lists every
+   URL that was attempted.
 
 Adding a forge is a row in that table, not a new code path.
 
@@ -123,8 +133,53 @@ https://example.org/rtl.tar.gz#modules/fifo
 `@ref` is stripped first to build the archive URL above. Once the archive is
 unpacked, Anvil looks for `module.json` at its root, or — if the archive has
 exactly one top-level directory, which is what GitHub and GitLab produce —
-inside that directory. `#subpath` is then resolved inside that tree;
-`module.json` must exist there, or the add fails naming what it found instead.
+inside that directory; any other shape is rejected, naming how many
+directories were actually found. `#subpath` is then resolved inside that
+tree; `module.json` must exist there, or the add fails naming the subpath
+that was checked.
+
+### Git and `.gitignore` at `init`
+
+`anvil init` sets up version control for a new project, silently unless
+something goes wrong:
+
+- it runs `git init` in the project directory, unless that directory is
+  already inside a git work tree — so running `anvil init` inside an existing
+  repository never nests a second one;
+- it writes a `.gitignore`, if one isn't already there, **regardless** of
+  whether `git init` itself succeeded — even a machine with no `git` at all
+  still gets one:
+
+  ```gitignore
+  build/
+  external/
+  *.vcd
+  *.log
+  __pycache__/
+  ```
+
+Anvil never edits or parses a `.gitignore` that's already present. If you'd
+rather vendor fetched modules than have Anvil re-fetch them, delete the
+`external/` line yourself — nothing here enforces it.
+
+Since the write is unconditional, a project only ends up with no
+`.gitignore` at all if it predates this behavior, or its `config.json` was
+never produced by `anvil init` in the first place. Either way, the first
+time a module lands in `external/`, Anvil warns once and still proceeds; a
+missing `.gitignore` says nothing about whether the project is otherwise
+fine:
+
+```
+⚠ no .gitignore in this project
+  external/ and build/ are generated -- committing them is rarely wanted.
+  A reasonable starting point:
+
+      build/
+      external/
+      *.vcd
+      *.log
+      __pycache__/
+```
 
 ### `external/`
 
@@ -137,11 +192,12 @@ external/
 ```
 
 This is what makes a project self-contained: with `external/` present,
-`anvil build` never touches the network. `external/` is what `anvil init`
-git-ignores by default, so it's normal for it to be absent after a fresh
-clone — when that happens, `anvil build`, `synth` and `test` re-fetch every
-module whose `source` is a URL, using the recorded source, and check the
-fetched code against the recorded `hash` before using it (see
+`anvil build` never touches the network. `external/` is one of the lines in
+the `.gitignore` [`anvil init` writes](#git-and-gitignore-at-init), so it's
+normal for it to be absent after a fresh clone — when that happens, `anvil
+build`, `synth` and `test` re-fetch every module whose `source` is a URL,
+using the recorded source, and check the fetched code against the recorded
+`hash` before using it (see
 [`config.json`](file-formats.md#configjson-project-config)). A module whose
 `source` is a local path can't be re-fetched; if it's missing, the build fails
 saying so instead.

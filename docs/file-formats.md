@@ -139,7 +139,7 @@ must also provide `link.ld` and `startup.S`.
 | `cpu.march` / `cpu.mabi` | string | `-march` / `-mabi` flags (e.g. `rv32i` / `ilp32`) |
 | `cflags` | string[] | Extra compiler flags |
 | `ldflags` | string[] | Extra linker flags |
-| `defsyms` | object | `name → expression`; each expression is evaluated with `config.params` as variables and passed as `-Wl,--defsym` |
+| `defsyms` | object | `name → expression`; each expression is restricted arithmetic (see below), evaluated with `config.params` as variables, and passed as `-Wl,--defsym` |
 
 ```json
 {
@@ -155,9 +155,23 @@ must also provide `link.ld` and `startup.S`.
 }
 ```
 
-!!! warning "defsym expressions are `eval`'d"
-    `defsyms` values are Python expressions evaluated in a sandbox (no builtins)
-    with `config.params` as the only names in scope. Keep them simple arithmetic.
+!!! note "`defsyms` expressions are restricted, not evaluated"
+    `defsyms` values are **not** run through Python's `eval` — an earlier
+    version did, and a shell command was demonstrated running through it via
+    `().__class__.__bases__[0].__subclasses__()`, reaching `Popen`. They are
+    parsed by `fetch.eval_arith`, an `ast`-based whitelist: only integer
+    literals, names bound in `config.params`, the operators
+    `+ - * / // % << >> & | ^ ~`, and parentheses are allowed. `**` is
+    deliberately absent — it turns a one-line expression into a memory bomb —
+    and a shift is capped at 64 bits. Anything else is rejected, naming the
+    defsym and what wasn't allowed:
+
+    ```
+    $ anvil compile
+    ✗ defsym '__stack_top' is not a valid expression
+        __stack_top = ().__class__.__bases__[0].__subclasses__()
+        Call is not allowed in an expression
+    ```
 
 ## `boards.json` — board registry
 
