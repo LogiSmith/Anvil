@@ -140,6 +140,8 @@ def install_external(ref, staging):
     _, _, subpath = fetch.split_ref(ref)
     work = tempfile.mkdtemp(dir=staging)
     archive, resolved = fetch.download_archive(ref, work)
+    if subpath:   # the fragment selects a module within the archive -- not part of what was downloaded
+        resolved = f"{resolved}#{subpath}"
     unpacked = os.path.join(work, "unpacked")
     os.makedirs(unpacked)
     fetch.extract(archive, unpacked)
@@ -405,8 +407,14 @@ def check_url_deps_are_recorded(resolved, modules):
     sources = [e.get("source") for e in modules.values()]
     for _, _, meta in resolved:
         for dep in meta.get("depends", []):
+            if fetch.classify(dep) != "url":
+                continue
+            _, _, subpath = fetch.split_ref(dep)
             # candidates, not == -- a shorthand ref won't match the resolved URL plan_external recorded verbatim
-            if fetch.classify(dep) == "url" and not any(c in sources for c in fetch.archive_candidates(dep)):
+            candidates = fetch.archive_candidates(dep)
+            if subpath:   # install_external reattaches it to source; the comparison must too
+                candidates = [f"{c}#{subpath}" for c in candidates]
+            if not any(c in sources for c in candidates):
                 fail(f"module '{meta['name']}' depends on '{dep}', which is not in this project",
                      "config.json and this module's own dependencies disagree")
 

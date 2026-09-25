@@ -730,6 +730,7 @@ class TestInstallExternal(TempCase):
                 f"{base_url}/a.tar.gz#modules/fifo", staging)
         self.assertEqual(name, "fifo")
         self.assertTrue(staged_dir.endswith(os.path.join("modules", "fifo")))
+        self.assertEqual(resolved, f"{base_url}/a.tar.gz#modules/fifo")
 
     def test_rejects_an_invalid_module_but_leaves_staging_usable(self):
         _tar_with(self.tmp, [("repo/module.json", b'{"name":"m","version":"1.0.0"}')])
@@ -1629,6 +1630,28 @@ class TestDependencyClosureConsistency(TempCase):
         self.assertTrue(any(s.endswith(os.path.join("fifo@1.0.0", "top.v")) for s in sources), sources)
         self.assertTrue(any(s.endswith(os.path.join("axi@1.0.0", "top.v")) for s in sources), sources)
 
+    def test_dependency_with_a_subpath_fragment_is_recognized_as_recorded(self):
+        # source is now recorded with its #subpath fragment -- the check must compare fragment-aware too
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            shared_url = f"{base_url}/rtl.tar.gz#modules/shared"
+            _tar_with(self.tmp, [
+                ("rtl-1/modules/fifo/module.json", _mod_meta("fifo", "1.0.0", depends=[shared_url])),
+                ("rtl-1/modules/fifo/top.v", b"module fifo; endmodule"),
+                ("rtl-1/modules/shared/module.json", _mod_meta("shared", "1.0.0")),
+                ("rtl-1/modules/shared/top.v", b"module shared; endmodule"),
+            ], name="rtl.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/rtl.tar.gz#modules/fifo"])
+        with open("config.json") as f:
+            cfg = json.load(f)
+
+        with capture() as out:
+            resolved = anvil.get_resolved_modules(cfg)   # must not raise
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("shared", [meta["name"] for _, _, meta in resolved])
+
     def test_bundled_only_project_is_unaffected(self):
         proj = os.path.join(self.tmp, "proj")
         os.makedirs(proj)
@@ -1826,6 +1849,79 @@ class TestEnsureModulesViaCmdSynth(TempCase):
         self.assertIn("Fetching m", out.getvalue())
         with open("Makefile") as f:
             self.assertIn("m@1.0.0", f.read())
+
+
+class TestMonorepoSubpathRoundTrip(TempCase, StdinCase):
+    """A URL ref's #subpath must survive into `source`, or the module can never be re-fetched."""
+
+    def setUp(self):
+        TempCase.setUp(self)
+        StdinCase.setUp(self)
+
+    def tearDown(self):
+        StdinCase.tearDown(self)
+        TempCase.tearDown(self)
+
+    def _serve_monorepo(self):
+        _tar_with(self.tmp, [
+            ("rtl-1/modules/fifo/module.json", _mod_meta("fifo", "1.0.0")),
+            ("rtl-1/modules/fifo/top.v", b"module fifo; endmodule"),
+            ("rtl-1/modules/uart/module.json", _mod_meta("uart", "1.0.0")),
+        ], name="rtl.tar.gz")
+
+    def test_source_is_recorded_with_the_subpath_fragment(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_monorepo()
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/rtl.tar.gz#modules/fifo"])
+        with open("config.json") as f:
+            entry = json.load(f)["modules"]["fifo"]
+        self.assertEqual(entry["source"], f"{base_url}/rtl.tar.gz#modules/fifo")
+
+    def test_deleted_external_is_restored_by_ensure_modules(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_monorepo()
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/rtl.tar.gz#modules/fifo"])
+            with open("config.json") as f:
+                cfg = json.load(f)
+            shutil.rmtree(anvil.EXTERNAL_DIR)
+
+            with capture() as out:
+                anvil.ensure_modules(cfg)   # must not raise -- restore, then hash must match
+        restored = os.path.join(anvil.EXTERNAL_DIR, "fifo@1.0.0")
+        self.assertTrue(os.path.isfile(os.path.join(restored, "top.v")))
+        self.assertIn("Fetching fifo", out.getvalue())
+        self.assertEqual(fetch.module_hash(restored), cfg["modules"]["fifo"]["hash"])
+
+    def test_consent_prompt_shows_the_full_reference_including_subpath(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_monorepo()
+            sys.stdin = FakeTTY("y\n")
+            with capture() as out:
+                anvil.cmd_addmodule([f"{base_url}/rtl.tar.gz#modules/fifo"])
+        self.assertIn(f"{base_url}/rtl.tar.gz#modules/fifo", out.getvalue())
+
+    def test_plain_module_source_has_no_stray_fragment(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.0.0")),
+                ("pkg/top.v", b"module fifo; endmodule"),
+            ], name="fifo.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        with open("config.json") as f:
+            entry = json.load(f)["modules"]["fifo"]
+        self.assertEqual(entry["source"], f"{base_url}/fifo.tar.gz")
+        self.assertNotIn("#", entry["source"])
 
 
 if __name__ == "__main__":
