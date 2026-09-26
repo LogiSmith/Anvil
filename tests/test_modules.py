@@ -1624,6 +1624,236 @@ class TestForceDisclosure(TempCase, StdinCase):
         self.assertEqual(before, after)
 
 
+class TestReAddSameSource(TempCase, StdinCase):
+    """A second `addmodule <url>` must judge what it fetched against the hash already recorded."""
+
+    def setUp(self):
+        TempCase.setUp(self)
+        StdinCase.setUp(self)
+        self._made = []
+        self._real_mkdtemp = anvil.tempfile.mkdtemp
+        def tracking_mkdtemp(*a, **k):
+            d = self._real_mkdtemp(*a, **k)
+            self._made.append(d)
+            return d
+        anvil.tempfile.mkdtemp = tracking_mkdtemp
+
+    def tearDown(self):
+        anvil.tempfile.mkdtemp = self._real_mkdtemp
+        StdinCase.tearDown(self)
+        TempCase.tearDown(self)
+
+    def _serve_fifo(self, rtl=b"module fifo; endmodule", soc=False):
+        entries = [("pkg/module.json", _mod_meta("fifo", "1.0.0")),
+                   ("pkg/top.v", rtl)]
+        if soc:
+            entries.append(("pkg/soc.json", b'{"compiler":"evil-cc","objcopy":"objcopy"}'))
+        _tar_with(self.tmp, entries, name="fifo.tar.gz")
+
+    def _install(self, base_url):
+        """Install the served fifo; returns config.json's bytes and the hash it recorded."""
+        with capture():
+            anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        with open("config.json", "rb") as f:
+            raw = f.read()
+        return raw, json.loads(raw)["modules"]["fifo"]["hash"]
+
+    def _staging_cleaned(self):
+        self.assertTrue(self._made)
+        for d in self._made:
+            self.assertFalse(os.path.exists(d))
+
+    def test_same_url_and_unchanged_content_is_a_reported_no_op(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            before, _ = self._install(base_url)
+            marker = os.path.join("external", "fifo@1.0.0", ".not-reinstalled")
+            open(marker, "w").close()   # a suffix module_hash ignores, so it cannot shift any hash
+            sys.stdin = io.StringIO("")   # a no-op must not need an answer
+            with capture() as out:
+                anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        text = out.getvalue()
+        self.assertIn("unchanged", text.lower())
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertTrue(os.path.exists(marker))   # the directory was never replaced
+        self._staging_cleaned()
+
+    def test_changed_content_is_disclosed_and_refused_without_consent(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            before, before_hash = self._install(base_url)
+            self._serve_fifo(rtl=b"module fifo; endmodule // upstream moved", soc=True)
+            sys.stdin = FakeTTY("n\n")
+            with capture() as out:
+                anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        text = out.getvalue()
+        self.assertIn(before_hash, text)
+        self.assertGreaterEqual(text.count("sha256:"), 2)   # recorded and found, not one of them
+        self.assertIn("soc.json", text)
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertFalse(os.path.exists(os.path.join("external", "fifo@1.0.0", "soc.json")))
+        self.assertEqual(sorted(os.listdir("external")), ["fifo@1.0.0"])
+        self._staging_cleaned()
+
+    def test_changed_content_on_a_non_tty_refuses_and_changes_nothing(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            before, before_hash = self._install(base_url)
+            self._serve_fifo(rtl=b"module fifo; endmodule // upstream moved")
+            sys.stdin = io.StringIO("")
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        text = out.getvalue()
+        self.assertIn(before_hash, text)
+        self.assertIn("--yes", text)
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self._staging_cleaned()
+
+    def test_yes_skips_the_prompt_but_still_prints_both_hashes(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            _, before_hash = self._install(base_url)
+            self._serve_fifo(rtl=b"module fifo; endmodule // upstream moved", soc=True)
+            sys.stdin = io.StringIO("")   # never read
+            with capture() as out:
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+        text = out.getvalue()
+        with open("config.json") as f:
+            after = json.load(f)["modules"]["fifo"]
+        self.assertNotEqual(after["hash"], before_hash)
+        self.assertIn(before_hash, text)
+        self.assertIn(after["hash"], text)
+        self.assertIn("soc.json", text)
+        self.assertTrue(os.path.exists(os.path.join("external", "fifo@1.0.0", "soc.json")))
+        self._staging_cleaned()
+
+    def test_a_changed_transitive_dependency_is_disclosed_and_refused(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            axi_url = f"{base_url}/axi.tar.gz"
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.0.0", depends=[axi_url])),
+                ("pkg/top.v", b"module fifo; endmodule"),
+            ], name="fifo.tar.gz")
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("axi", "1.0.0")),
+                ("pkg/top.v", b"module axi; endmodule"),
+            ], name="axi.tar.gz")
+            with capture():
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz"])
+            with open("config.json", "rb") as f:
+                before = f.read()
+            axi_hash = json.loads(before)["modules"]["axi"]["hash"]
+
+            _tar_with(self.tmp, [                       # only the dependency moves
+                ("pkg/module.json", _mod_meta("axi", "1.0.0")),
+                ("pkg/top.v", b"module axi; endmodule // upstream moved"),
+                ("pkg/soc.json", b'{"compiler":"evil-cc","objcopy":"objcopy"}'),
+            ], name="axi.tar.gz")
+            sys.stdin = FakeTTY("n\n")
+            with capture() as out:
+                anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        text = out.getvalue()
+        self.assertIn("axi", text)
+        self.assertIn(axi_hash, text)
+        self.assertIn("soc.json", text)
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertFalse(os.path.exists(os.path.join("external", "axi@1.0.0", "soc.json")))
+        self.assertFalse(os.path.exists("firmware"))
+        self._staging_cleaned()
+
+    def test_an_unchanged_re_add_beside_a_genuinely_new_module_reads_correctly(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            before, _ = self._install(base_url)
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("axi", "1.0.0")),
+                ("pkg/top.v", b"module axi; endmodule"),
+            ], name="axi.tar.gz")
+            sys.stdin = io.StringIO("")   # never read
+            with capture() as out:
+                anvil.cmd_addmodule(["--yes", f"{base_url}/fifo.tar.gz", f"{base_url}/axi.tar.gz"])
+        text = out.getvalue()
+        self.assertIn("fifo is unchanged", text)
+        self.assertIn("Added 1 module(s)", text)
+        with open("config.json") as f:
+            cfg = json.load(f)["modules"]
+        self.assertEqual(sorted(cfg), ["axi", "fifo"])
+        self.assertEqual(cfg["fifo"], json.loads(before)["modules"]["fifo"])
+        self._staging_cleaned()
+
+    def test_a_recorded_module_whose_directory_is_gone_is_restored_without_a_prompt(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            before, _ = self._install(base_url)
+            shutil.rmtree(os.path.join("external", "fifo@1.0.0"))   # external/ is git-ignored, so a fresh clone is exactly this
+            sys.stdin = io.StringIO("")   # the content still hashes to what the project already trusts
+            with capture() as out:
+                anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        text = out.getvalue()
+        self.assertNotIn("unchanged", text.lower())
+        self.assertTrue(os.path.isfile(os.path.join("external", "fifo@1.0.0", "top.v")))
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self._staging_cleaned()
+
+    # the two that must keep behaving exactly as they did
+
+    def test_a_module_not_yet_recorded_is_still_a_plain_add(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            sys.stdin = FakeTTY("y\n")
+            with capture() as out:
+                anvil.cmd_addmodule([f"{base_url}/fifo.tar.gz"])
+        text = out.getvalue()
+        self.assertIn("will be added", text)
+        self.assertNotIn("sha256:", text)   # nothing recorded yet, so there is no before/after to show
+        with open("config.json") as f:
+            self.assertIn("fifo", json.load(f)["modules"])
+        self._staging_cleaned()
+
+    def test_the_same_name_from_a_different_url_still_collides(self):
+        proj = _scaffold_project(self.tmp)
+        os.chdir(proj)
+        with serve(self.tmp) as base_url:
+            self._serve_fifo()
+            before, _ = self._install(base_url)
+            _tar_with(self.tmp, [
+                ("pkg/module.json", _mod_meta("fifo", "1.0.0")),
+                ("pkg/top.v", b"module fifo; endmodule // elsewhere"),
+            ], name="other.tar.gz")
+            sys.stdin = FakeTTY("y\n")
+            with capture() as out:
+                with self.assertRaises(SystemExit):
+                    anvil.cmd_addmodule([f"{base_url}/other.tar.gz"])
+        text = out.getvalue()
+        self.assertIn(f"{base_url}/fifo.tar.gz", text)
+        self.assertIn(f"{base_url}/other.tar.gz", text)
+        with open("config.json", "rb") as f:
+            self.assertEqual(f.read(), before)
+        self._staging_cleaned()
+
+
 class TestMidInstallFailure(TempCase):
     def test_failure_partway_through_names_installed_and_leftover_modules(self):
         proj = _scaffold_project(self.tmp)

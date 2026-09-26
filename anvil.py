@@ -186,6 +186,15 @@ def install_external(ref, staging):
     meta = fetch.validate_module(root)
     return meta["name"], meta, root, resolved
 
+def readd_state(recorded, found, entry):
+    """What a fetched module is to this project: "new", "changed" (a re-anchor), "unchanged", or "missing" from disk."""
+    if recorded is None:
+        return "new"
+    if recorded != found:
+        return "changed"
+    on_disk = isinstance(entry.get("path"), str) and entry_dir_present(entry)
+    return "unchanged" if on_disk else "missing"   # an unreadable or absent path is restored, never re-anchored
+
 def plan_external(refs, staging, existing):
     """Fetch every external ref and its dependencies breadth-first; nothing is installed yet."""
     queue, seen, out = [(r, None) for r in refs], {}, []
@@ -196,7 +205,7 @@ def plan_external(refs, staging, existing):
         except (fetch.NoArchiveFound, fetch.InvalidModule, fetch.UnsafeArchive) as e:
             e.ref = ref   # the queue also walks transitive deps -- only here knows which ref this was
             raise
-        already_recorded(name, resolved, existing)
+        recorded = existing[name].get("hash") if already_recorded(name, resolved, existing) else None
         # two refs in the same request resolving to one name is the same risk, just not against config.json yet
         if name in seen and seen[name] != resolved:
             fail(f"module '{name}' resolves to two different sources in this request",
@@ -204,6 +213,7 @@ def plan_external(refs, staging, existing):
         if name in seen:
             continue
         seen[name] = resolved
+        found = fetch.module_hash(staged) if recorded is not None else None   # only where there is a hash to judge it against
         out.append({
             "name": name,
             "version": meta.get("version", "0.0.0"),
@@ -211,6 +221,9 @@ def plan_external(refs, staging, existing):
             "staged": staged,
             "required_by": required_by,
             "has_soc": os.path.isfile(os.path.join(staged, "soc.json")),
+            "recorded": recorded,
+            "found": found,
+            "state": readd_state(recorded, found, existing.get(name)),
         })
         for dep in meta.get("depends", []):
             if fetch.classify(dep) != "name":   # bundled names keep going through resolve_deps
@@ -276,8 +289,8 @@ def plan_force(names, current):
         })
     return out
 
-def confirm_force(plan, assume_yes):
-    """Re-recording a hash is the one path that bypasses a fresh add's prompt -- gate it the same way."""
+def confirm_force(plan, assume_yes, action="re-recorded", verb="Re-record"):
+    """The gate for re-anchoring a recorded hash -- --force and a re-add of the same source share it, so neither can drift."""
     changed = [p for p in plan if p["before"] != p["after"]]
     for p in plan:
         if p["before"] == p["after"]:
@@ -285,7 +298,7 @@ def confirm_force(plan, assume_yes):
     if not changed:
         return True
 
-    print("\nThese modules will be re-recorded:\n")
+    print(f"\nThese modules will be {action}:\n")
     for p in changed:
         print(f"  {p['name']}  {p['version']}")
         print(f"      recorded  {p['before']}")
@@ -293,7 +306,7 @@ def confirm_force(plan, assume_yes):
         if p["has_soc"]:
             print(yellow("      ⚠ ships soc.json -- chooses the compiler that runs"))
         print()
-    return ask_consent(f"Re-record these {len(changed)} module(s)? [y/N] ", assume_yes,
+    return ask_consent(f"{verb} these {len(changed)} module(s)? [y/N] ", assume_yes,
                         "refusing to re-record module hashes without confirmation")
 
 def find_by_local_path(current, base, arg):
@@ -1334,11 +1347,19 @@ def cmd_addmodule(args):
         staging = tempfile.mkdtemp()
         try:
             plan = plan_external(external_refs, staging, {**current, **to_add})
-            if not confirm_external(plan, assume_yes):
+            # a re-add of a recorded source re-anchors trust exactly as --force does, so it discloses the same way
+            rerecord = [{**m, "before": m["recorded"], "after": m["found"]}
+                        for m in plan if m["state"] in ("changed", "unchanged")]
+            if not confirm_force(rerecord, assume_yes, "replaced with the fetched content and re-recorded", "Replace"):
                 print("[Anvil] Aborted -- nothing installed.")
                 return
-            warn_if_no_gitignore(os.getcwd())
-            os.makedirs(EXTERNAL_DIR, exist_ok=True)
+            plan = [m for m in plan if m["state"] != "unchanged"]
+            if not confirm_external([m for m in plan if m["state"] == "new"], assume_yes):
+                print("[Anvil] Aborted -- nothing installed.")
+                return
+            if plan:
+                warn_if_no_gitignore(os.getcwd())
+                os.makedirs(EXTERNAL_DIR, exist_ok=True)
             installed = []
             for i, m in enumerate(plan):
                 dest = os.path.join(EXTERNAL_DIR, f"{m['name']}@{m['version']}")
