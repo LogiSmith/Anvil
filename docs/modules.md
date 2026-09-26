@@ -90,17 +90,17 @@ by which host it is — this is what keeps a self-hosted forge working without
 Anvil knowing it exists. `git` is never invoked: a plain git server has no
 archive endpoint, and a direct archive link works there just as well.
 
-1. If the ref carries no `@ref` — a plain URL, or a
-   `.../releases/tag/<ref>` URL, which already has one built in — request it
-   as given, then with each of `.tar.gz`, `.zip`, `.tgz`, `.tar.xz` appended
-   in turn. This step is skipped entirely when `@ref` is present:
-   `owner/repo@ref` isn't itself a URL, so there's nothing literal to try.
-2. If the response to any of those is one of the archive content types
-   (`application/gzip`, `application/x-gzip`, `application/zip`,
-   `application/x-tar`), use it — first archive wins.
-3. If the URL matches a known forge shape and carries a ref (`@ref`, or a
-   `/releases/tag/<ref>` path), also try that forge's own archive URLs for
-   it, in order:
+Anvil builds a list of candidate URLs from the ref, then requests them in
+order; the first one that really is an archive wins. What goes on the list:
+
+1. **The URL as given, then with each of `.tar.gz`, `.zip`, `.tgz`,
+   `.tar.xz` appended in turn** — for a plain URL, or a
+   `.../releases/tag/<ref>` URL, which is a real URL with the ref already
+   built into it. Skipped when the ref carries `@ref`: `owner/repo@ref`
+   isn't itself a URL, so there's nothing literal to try.
+2. **The forge's own archive URLs**, when the source carries a ref (`@ref`,
+   or a `/releases/tag/<ref>` path) *and* the host matches a forge shape
+   Anvil knows, in order:
 
    | You write | Anvil tries, in order |
    |---|---|
@@ -119,8 +119,30 @@ archive endpoint, and a direct archive link works there just as well.
    `gitlab.com/gitlab-org/gitlab-test@v1.1.1` resolved the same way, to
    `https://gitlab.com/gitlab-org/gitlab-test/-/archive/v1.1.1/gitlab-test-v1.1.1.tar.gz`.
 
-4. If nothing tried turned out to be an archive, fail — the error lists every
-   URL that was attempted.
+3. **`<url>@<ref>` exactly as written, plus the same extension probes** —
+   only when steps 1 and 2 both put nothing on the list, which is precisely
+   an `@ref` on a host no forge row matches. A self-hosted forge may well
+   bake the ref into a filename, and where it doesn't, a handful of 404s is a
+   cheaper answer than an empty candidate list.
+
+A candidate is taken when the response is one of the archive content types
+(`application/gzip`, `application/x-gzip`, `application/zip`,
+`application/x-tar`) — first archive wins. If none of them is, the fetch fails
+listing every URL attempted; where the `@ref` reached no forge row, the last
+line names the host, since that's the part the ladder couldn't help with (a
+local test server stands in for the unknown forge below):
+
+```
+✗ could not fetch module 'http://127.0.0.1:42759/ana/rtl@v1.2.0'
+    no archive found for http://127.0.0.1:42759/ana/rtl@v1.2.0
+        tried:
+          http://127.0.0.1:42759/ana/rtl@v1.2.0 -> HTTP 404
+          http://127.0.0.1:42759/ana/rtl@v1.2.0.tar.gz -> HTTP 404
+          http://127.0.0.1:42759/ana/rtl@v1.2.0.zip -> HTTP 404
+          http://127.0.0.1:42759/ana/rtl@v1.2.0.tgz -> HTTP 404
+          http://127.0.0.1:42759/ana/rtl@v1.2.0.tar.xz -> HTTP 404
+        no forge rewrite matched this 127.0.0.1:42759 URL -- a direct archive URL always works
+```
 
 Adding a forge is a row in that table, not a new code path.
 
@@ -206,6 +228,46 @@ using the recorded source, and check the fetched code against the recorded
 `source` is a local path can't be re-fetched; if it's missing, the build fails
 saying so instead.
 
+A fetched module is only ever written inside `external/`, and a recorded
+`path` that resolves outside it is refused *before* the request goes out — a
+`config.json` you didn't write shouldn't be able to make Anvil ask a server
+for an archive, let alone unpack one somewhere of its own choosing.
+
+`anvil modules` and `anvil status` neither fetch nor exit on any of this;
+they're how you look at a project you can't build yet. Each entry is reported
+as **not fetched** (a URL module before its first build), **missing** (a local
+or bundled directory no build can restore), or **unusable** (a directory
+that's there but has no readable `module.json`, or a URL entry whose recorded
+`path` escapes `external/`):
+
+```
+[Anvil] Modules in 'blinky':
+  + fifo                      (not fetched -- run: anvil build)
+  + axi-lite                  (unusable -- no readable module.json in external/axi-lite@2.0.0; delete it, then: anvil build)
+  + gpio                      gpio module
+  + scratch                   (missing -- ../../../rtl/scratch does not exist and '/tmp/claude-1000/rtl/scratch' cannot be re-fetched)
+
+[Anvil] Available modules:
+  ...
+```
+
+`anvil status` prints the same three under their own labels, and leaves the
+SoC line unanswered, naming the worst state standing in the way: which module
+carries `soc.json` isn't knowable until every module is readable.
+
+```
+[Anvil] Project   : blinky
+       Board     : Nexys-A7-50T -- Digilent Nexys A7 50T (xc7a50t)
+       Modules   : fifo, axi-lite, gpio, scratch
+       SoC       : unknown -- modules unusable
+       Params    : {}
+       Firmware  : none 
+       Bitstream : not built
+       Unfetched : fifo -- run: anvil build
+       Unusable  : axi-lite -- no readable module.json in external/axi-lite@2.0.0; delete it, then: anvil build
+       Missing   : scratch -- ../../../rtl/scratch does not exist and '/tmp/claude-1000/rtl/scratch' cannot be re-fetched
+```
+
 ## Dependency resolution
 
 `resolve_deps()` walks the tree **depth-first**:
@@ -250,9 +312,27 @@ anvil removemodule uart          # remove (refuses if another module depends on 
 `config.modules`, and — if the added tree contains a SoC module — scaffolds a
 `firmware/` template and sets a default `params.ram_addr_bits`.
 
+A module's name is its own claim, so a bundled key, a directory and a fetched
+archive can all declare the same one. A name already in the project from a
+*different* source is refused, naming both, rather than skipped — skipping
+quietly would leave you building against whichever source was added first,
+under a name you thought you'd just pointed somewhere else:
+
+```
+✗ module 'solo' is already in this project
+    present:  http://127.0.0.1:42759/solo.tar.gz
+    incoming: http://127.0.0.1:42759/solo-fork.tar.gz
+```
+
+A local ref is judged by where it resolves, not how it was typed, so re-adding
+the same directory spelled absolutely or with `~` is not a different source —
+it answers `[Anvil] All requested modules already present.`
+
 `removemodule` refuses to drop a module that another kept module still depends
-on, to avoid leaving the project unbuildable. For a fetched module it also
-deletes that module's own directory under `external/`:
+on, to avoid leaving the project unbuildable — a `depends` entry that is a URL
+counts the same, matched against the recorded entries rather than the registry,
+since a URL is never a registry name. For a fetched module it also deletes that
+module's own directory under `external/`:
 
 ```
 [Anvil] Removed directory: external/fifo@1.2.0
@@ -322,19 +402,46 @@ agreement:
 Consent is asked once, not on every build. `config.json` already records what
 was agreed to, so `anvil build` re-fetching a missing `external/` (see
 [`external/`](#external) above) just verifies the recorded hash instead of
-asking again. A hash that doesn't match is an error, not a fresh prompt:
+asking again. A hash that doesn't match is an error, not a fresh prompt — and
+which error depends on which side moved.
+
+**The directory was missing and has just been re-fetched.** The hash is
+checked in a staging directory, so code you never agreed to doesn't reach
+`external/` at all:
+
+```
+[Anvil] Fetching fifo from http://127.0.0.1:42759/fifo.tar.gz ...
+
+✗ module 'fifo' does not match its recorded hash
+    source: http://127.0.0.1:42759/fifo.tar.gz
+    recorded: sha256:ea54e0c9758d0b801bc0c998936240f3867b5dcd30d495d1c7da80378e4ed9d6
+       found: sha256:112b3a2cf516b3d1fb14349a084006abf65bd6a4d864d19535dace0901042eb9
+    the recorded source returned different code -- the tag may have moved
+```
+
+There is deliberately no `--force` here. On this path it would mean "record
+whatever the server just sent", which is the one thing the hash exists to
+prevent — the only witness you'd be believing is the one that changed. Find
+out why the source moved instead: a re-tagged release, a rewritten branch, a
+URL that no longer points where you thought. Nothing was written, so once the
+source serves the recorded code again the next build simply fetches it; there
+is no half-installed tree left to delete first.
+
+**The directory was already there and something edited it.** Here the two
+sides you're comparing are both yours, so re-recording is a judgement you can
+actually make:
 
 ```
 ✗ module 'fifo' does not match its recorded hash
-    recorded: sha256:0000000000000000000000000000000000000000000000000000000000000000
-         found: sha256:a9da67ed484a9b2aec956c62f3450aa8cb39c24f1cd5ab2ff151b3dd149dfbab
+    recorded: sha256:ea54e0c9758d0b801bc0c998936240f3867b5dcd30d495d1c7da80378e4ed9d6
+         found: sha256:a5b454e3ed0a707ad86a3dcca1703870e8997db76c8b80c368c7676bd2ed3866
       re-record with: anvil addmodule --force fifo
 ```
 
 If the change was intentional, `anvil addmodule --force <name>` re-records the
 new hash — showing the old and new hash and re-flagging `soc.json`, gated by
-the same `[y/N]` prompt. If it wasn't, don't re-record it: work out why the
-module's own source changed underneath you.
+the same `[y/N]` prompt. If it wasn't, don't re-record it: work out what wrote
+into `external/` without being asked.
 
 ### What the hash does not prove
 
