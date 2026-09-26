@@ -1,0 +1,1260 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Internals and file-format reference for the Anvil FPGA CLI">
+      
+      
+        <meta name="author" content="LogiSmith">
+      
+      
+        <link rel="canonical" href="https://logismith.github.io/Anvil/modules/">
+      
+      
+        <link rel="prev" href="../file-formats/">
+      
+      
+        <link rel="next" href="../contributing/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Module system - Anvil — Developer Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#module-system" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Anvil — Developer Docs" class="md-header__button md-logo" aria-label="Anvil — Developer Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Anvil — Developer Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Module system
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/LogiSmith/Anvil" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    LogiSmith/Anvil
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Anvil — Developer Docs" class="md-nav__button md-logo" aria-label="Anvil — Developer Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Anvil — Developer Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/LogiSmith/Anvil" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    LogiSmith/Anvil
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../file-formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Module system
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Module system
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#concept" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concept
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#anatomy-of-a-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Anatomy of a module
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registry-versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registry &amp; versioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#module-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Module sources
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Module sources">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resolving-a-url-to-an-archive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolving a URL to an archive
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ref-and-subpath" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        @ref and #subpath
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#git-and-gitignore-at-init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Git and .gitignore at init
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#external" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        external/
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency resolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#working-with-modules-in-a-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working with modules in a project
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Working with modules in a project">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#consent-before-installing-an-external-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consent before installing an external module
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-hash-does-not-prove" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the hash does not prove
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authoring-a-new-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authoring a new module
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#concept" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concept
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#anatomy-of-a-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Anatomy of a module
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registry-versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registry &amp; versioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#module-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Module sources
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Module sources">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resolving-a-url-to-an-archive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolving a URL to an archive
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ref-and-subpath" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        @ref and #subpath
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#git-and-gitignore-at-init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Git and .gitignore at init
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#external" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        external/
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency resolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#working-with-modules-in-a-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working with modules in a project
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Working with modules in a project">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#consent-before-installing-an-external-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consent before installing an external module
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-hash-does-not-prove" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the hash does not prove
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authoring-a-new-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authoring a new module
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="module-system">Module system<a class="headerlink" href="#module-system" title="Permanent link">&para;</a></h1>
+<p>How reusable RTL modules are stored, resolved and authored.</p>
+<h2 id="concept">Concept<a class="headerlink" href="#concept" title="Permanent link">&para;</a></h2>
+<p>A <strong>module</strong> is a versioned, self-contained RTL block. Anvil ships some of
+them itself, in <code>modules/&lt;name&gt;@&lt;version&gt;/</code>; a project can also pull in a
+module from a local path or a URL, landing in <code>external/&lt;name&gt;@&lt;version&gt;/</code> —
+see <a href="#module-sources">Module sources</a> below for how a reference is told apart
+and fetched.</p>
+<p>Wherever it comes from, a module is recorded in the project's
+<a href="../file-formats/#configjson-project-config"><code>config.json</code></a> <code>modules</code> object,
+keyed by its own name. Modules in turn declare their own <code>depends</code>, so adding
+one pulls in its whole dependency tree — bundled, external or local, resolved
+recursively. This keeps shared RTL (UART, APB, PicoRV32, …) in one place
+instead of being copy-pasted between projects.</p>
+<h2 id="anatomy-of-a-module">Anatomy of a module<a class="headerlink" href="#anatomy-of-a-module" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>modules/uart@1.0.0/
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── module.json     ← metadata + depends   (required)
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>├── uart.sv         ← RTL source (.sv or .v; any number)
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>└── tb/             ← optional testbenches
+</code></pre></div>
+<p>A <strong>SoC</strong> module additionally carries:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>├── soc.json        ← marks it as a SoC + firmware build config
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>├── link.ld         ← linker script
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>└── startup.S       ← startup code
+</code></pre></div>
+<p>See <a href="../file-formats/">File formats</a> for <code>module.json</code> and <code>soc.json</code> schemas.
+The layout is the same wherever the module lives — <code>modules/</code>, <code>external/</code>, or
+a local path — only the containing directory differs.</p>
+<h2 id="registry-versioning">Registry &amp; versioning<a class="headerlink" href="#registry-versioning" title="Permanent link">&para;</a></h2>
+<p><a href="../file-formats/#modulesjson-module-registry"><code>modules.json</code></a> is the catalog of
+modules bundled with Anvil. A <strong>bundled</strong> reference is either:</p>
+<ul>
+<li><code>name</code> — resolves to the registry's <code>latest</code> version, or</li>
+<li><code>name@version</code> — an exact version.</li>
+</ul>
+<p><code>load_modules_registry()</code> filters out catalog entries whose directory is missing,
+so the registry self-heals if it drifts (you get a clean <em>Unknown module</em> error
+rather than a crash). Keep <code>modules.json</code> in sync with <code>modules/</code> —
+<code>anvil installmodule</code> does this for you.</p>
+<p>A module reference isn't always a bundled name, though — it can also be a
+local path or a URL. See <a href="#module-sources">Module sources</a> next.</p>
+<h2 id="module-sources">Module sources<a class="headerlink" href="#module-sources" title="Permanent link">&para;</a></h2>
+<p>A module reference is one of three things, told apart by the shape of the
+string itself — Anvil never needs to be told which kind it's looking at:</p>
+<ol>
+<li><strong>A local path</strong> — starts with <code>./</code>, <code>../</code>, <code>/</code>, or <code>~</code>. Used in place;
+   nothing is downloaded or copied.</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>anvil<span class="w"> </span>addmodule<span class="w"> </span>../scratch-module
+</code></pre></div>
+<p>An absolute or <code>~</code> path is recorded in <code>source</code> exactly as typed, but
+   <code>path</code> is always a <code>./</code>/<code>../</code>-relative alias resolvable from the project
+   root — see <a href="../file-formats/#modules">Modules</a> for a worked example.</p>
+<ol>
+<li><strong>A bundled name</strong> — anything else that isn't a URL; resolves against
+   <code>modules.json</code> as in <a href="#registry-versioning">Registry &amp; versioning</a> above.</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>anvil<span class="w"> </span>addmodule<span class="w"> </span>uart
+</code></pre></div>
+<ol>
+<li><strong>A URL</strong> — fetched as an archive.</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>anvil<span class="w"> </span>addmodule<span class="w"> </span>https://example.org/fifo.tar.gz
+</code></pre></div>
+<h3 id="resolving-a-url-to-an-archive">Resolving a URL to an archive<a class="headerlink" href="#resolving-a-url-to-an-archive" title="Permanent link">&para;</a></h3>
+<p>Anvil decides what a URL points to by <em>what the server actually returns</em>, not
+by which host it is — this is what keeps a self-hosted forge working without
+Anvil knowing it exists. <code>git</code> is never invoked: a plain git server has no
+archive endpoint, and a direct archive link works there just as well.</p>
+<p>Anvil builds a list of candidate URLs from the ref, then requests them in
+order; the first one that really is an archive wins. What goes on the list:</p>
+<ol>
+<li><strong>The URL as given, then with each of <code>.tar.gz</code>, <code>.zip</code>, <code>.tgz</code>,
+   <code>.tar.xz</code> appended in turn</strong> — for a plain URL, or a
+   <code>.../releases/tag/&lt;ref&gt;</code> URL, which is a real URL with the ref already
+   built into it. Skipped when the ref carries <code>@ref</code>: <code>owner/repo@ref</code>
+   isn't itself a URL, so there's nothing literal to try.</li>
+<li><strong>The forge's own archive URLs</strong>, when the source carries a ref (<code>@ref</code>,
+   or a <code>/releases/tag/&lt;ref&gt;</code> path) <em>and</em> the host matches a forge shape
+   Anvil knows, in order:</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>You write</th>
+<th>Anvil tries, in order</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>github.com/&lt;owner&gt;/&lt;repo&gt;@&lt;ref&gt;</code></td>
+<td><code>.../archive/refs/tags/&lt;ref&gt;.tar.gz</code>, then <code>.../archive/refs/heads/&lt;ref&gt;.tar.gz</code>, then <code>.../archive/&lt;ref&gt;.tar.gz</code></td>
+</tr>
+<tr>
+<td><code>github.com/&lt;owner&gt;/&lt;repo&gt;/releases/tag/&lt;ref&gt;</code></td>
+<td>the same three, using that <code>&lt;ref&gt;</code></td>
+</tr>
+<tr>
+<td><code>gitlab.com/&lt;owner&gt;/&lt;repo&gt;@&lt;ref&gt;</code></td>
+<td><code>.../-/archive/&lt;ref&gt;/&lt;repo&gt;-&lt;ref&gt;.tar.gz</code></td>
+</tr>
+</tbody>
+</table>
+<p>The three GitHub candidates exist because <code>&lt;ref&gt;</code> might name a tag or a
+   branch — Anvil doesn't ask which; it tries a tag path, then a branch path,
+   then a bare ref, and uses whichever comes back as an archive first.</p>
+<p>Checked live against real repositories while writing this page:
+   <code>github.com/pallets/flask@3.0.0</code> carries <code>@ref</code>, so step 1 was skipped and
+   only these three were tried — it resolved on the first,
+   <code>https://github.com/pallets/flask/archive/refs/tags/3.0.0.tar.gz</code>.
+   <code>gitlab.com/gitlab-org/gitlab-test@v1.1.1</code> resolved the same way, to
+   <code>https://gitlab.com/gitlab-org/gitlab-test/-/archive/v1.1.1/gitlab-test-v1.1.1.tar.gz</code>.</p>
+<ol>
+<li><strong><code>&lt;url&gt;@&lt;ref&gt;</code> exactly as written, plus the same extension probes</strong> —
+   only when steps 1 and 2 both put nothing on the list, which is precisely
+   an <code>@ref</code> on a host no forge row matches. A self-hosted forge may well
+   bake the ref into a filename, and where it doesn't, a handful of 404s is a
+   cheaper answer than an empty candidate list.</li>
+</ol>
+<p>A candidate is taken when the response is one of the archive content types
+(<code>application/gzip</code>, <code>application/x-gzip</code>, <code>application/zip</code>,
+<code>application/x-tar</code>) — first archive wins. If none of them is, the fetch fails
+listing every URL attempted; where the <code>@ref</code> reached no forge row, the last
+line names the host, since that's the part the ladder couldn't help with (a
+local test server stands in for the unknown forge below):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>✗ could not fetch module 'http://127.0.0.1:42759/ana/rtl@v1.2.0'
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    no archive found for http://127.0.0.1:42759/ana/rtl@v1.2.0
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>        tried:
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>          http://127.0.0.1:42759/ana/rtl@v1.2.0 -&gt; HTTP 404
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>          http://127.0.0.1:42759/ana/rtl@v1.2.0.tar.gz -&gt; HTTP 404
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>          http://127.0.0.1:42759/ana/rtl@v1.2.0.zip -&gt; HTTP 404
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>          http://127.0.0.1:42759/ana/rtl@v1.2.0.tgz -&gt; HTTP 404
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>          http://127.0.0.1:42759/ana/rtl@v1.2.0.tar.xz -&gt; HTTP 404
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>        no forge rewrite matched this 127.0.0.1:42759 URL -- a direct archive URL always works
+</code></pre></div>
+<p>Adding a forge is a row in that table, not a new code path.</p>
+<h3 id="ref-and-subpath"><code>@ref</code> and <code>#subpath</code><a class="headerlink" href="#ref-and-subpath" title="Permanent link">&para;</a></h3>
+<p>A source can carry a version and, separately, pick one module out of a
+repository that holds several. The fragment is always last, after any <code>@ref</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>github.com/ana/rtl@v1.2.0#modules/fifo
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>https://example.org/rtl.tar.gz#modules/fifo
+</code></pre></div>
+<p><code>@ref</code> is stripped first to build the archive URL above. Once the archive is
+unpacked, Anvil looks for <code>module.json</code> at its root, or — if the archive has
+exactly one top-level directory, which is what GitHub and GitLab produce —
+inside that directory; any other shape is rejected, naming how many
+directories were actually found. <code>#subpath</code> is then resolved inside that
+tree; <code>module.json</code> must exist there, or the add fails naming the subpath
+that was checked.</p>
+<h3 id="git-and-gitignore-at-init">Git and <code>.gitignore</code> at <code>init</code><a class="headerlink" href="#git-and-gitignore-at-init" title="Permanent link">&para;</a></h3>
+<p><code>anvil init</code> sets up version control for a new project, silently unless
+something goes wrong:</p>
+<ul>
+<li>it runs <code>git init</code> in the project directory, unless that directory is
+  already inside a git work tree — so running <code>anvil init</code> inside an existing
+  repository never nests a second one;</li>
+<li>it writes a <code>.gitignore</code>, if one isn't already there, <strong>regardless</strong> of
+  whether <code>git init</code> itself succeeded — even a machine with no <code>git</code> at all
+  still gets one:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>build/
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>external/
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>*.vcd
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>*.log
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>__pycache__/
+</code></pre></div>
+<p>Anvil never edits or parses a <code>.gitignore</code> that's already present. If you'd
+rather vendor fetched modules than have Anvil re-fetch them, delete the
+<code>external/</code> line yourself — nothing here enforces it.</p>
+<p>Since the write is unconditional, a project only ends up with no
+<code>.gitignore</code> at all if it predates this behavior, or its <code>config.json</code> was
+never produced by <code>anvil init</code> in the first place. Either way, the first
+time a module lands in <code>external/</code>, Anvil warns once and still proceeds; a
+missing <code>.gitignore</code> says nothing about whether the project is otherwise
+fine:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>⚠ no .gitignore in this project
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  external/ and build/ are generated -- committing them is rarely wanted.
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  A reasonable starting point:
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>      build/
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>      external/
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>      *.vcd
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>      *.log
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>      __pycache__/
+</code></pre></div>
+<h3 id="external"><code>external/</code><a class="headerlink" href="#external" title="Permanent link">&para;</a></h3>
+<p>A fetched module lands inside the project itself, one directory per module:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>external/
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>├── fifo@1.2.0/
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>└── spi-master@0.3.1/
+</code></pre></div>
+<p>This is what makes a project self-contained: with <code>external/</code> present,
+<code>anvil build</code> never touches the network. <code>external/</code> is one of the lines in
+the <code>.gitignore</code> <a href="#git-and-gitignore-at-init"><code>anvil init</code> writes</a>, so it's
+normal for it to be absent after a fresh clone — when that happens, <code>anvil
+build</code>, <code>synth</code> and <code>test</code> re-fetch every module whose <code>source</code> is a URL,
+using the recorded source, and check the fetched code against the recorded
+<code>hash</code> before using it (see
+<a href="../file-formats/#configjson-project-config"><code>config.json</code></a>). A module whose
+<code>source</code> is a local path can't be re-fetched; if it's missing, the build fails
+saying so instead.</p>
+<p>A fetched module is only ever written inside <code>external/</code>, and a recorded
+<code>path</code> that resolves outside it is refused <em>before</em> the request goes out — a
+<code>config.json</code> you didn't write shouldn't be able to make Anvil ask a server
+for an archive, let alone unpack one somewhere of its own choosing.</p>
+<p><code>anvil modules</code> and <code>anvil status</code> neither fetch nor exit on any of this;
+they're how you look at a project you can't build yet. Each entry is reported
+as <strong>not fetched</strong> (a URL module before its first build), <strong>missing</strong> (a local
+or bundled directory no build can restore), or <strong>unusable</strong> (a directory
+that's there but has no readable <code>module.json</code>, or a URL entry whose recorded
+<code>path</code> escapes <code>external/</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>[Anvil] Modules in 'blinky':
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>  + fifo                      (not fetched -- run: anvil build)
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>  + axi-lite                  (unusable -- no readable module.json in external/axi-lite@2.0.0; delete it, then: anvil build)
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>  + gpio                      gpio module
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>  + scratch                   (missing -- ../../../rtl/scratch does not exist and '/tmp/claude-1000/rtl/scratch' cannot be re-fetched)
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>[Anvil] Available modules:
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>  ...
+</code></pre></div>
+<p><code>anvil status</code> prints the same three under their own labels, and leaves the
+SoC line unanswered, naming the worst state standing in the way: which module
+carries <code>soc.json</code> isn't knowable until every module is readable.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>[Anvil] Project   : blinky
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>       Board     : Nexys-A7-50T -- Digilent Nexys A7 50T (xc7a50t)
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>       Modules   : fifo, axi-lite, gpio, scratch
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>       SoC       : unknown -- modules unusable
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>       Params    : {}
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>       Firmware  : none 
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>       Bitstream : not built
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>       Unfetched : fifo -- run: anvil build
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>       Unusable  : axi-lite -- no readable module.json in external/axi-lite@2.0.0; delete it, then: anvil build
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>       Missing   : scratch -- ../../../rtl/scratch does not exist and '/tmp/claude-1000/rtl/scratch' cannot be re-fetched
+</code></pre></div>
+<h2 id="dependency-resolution">Dependency resolution<a class="headerlink" href="#dependency-resolution" title="Permanent link">&para;</a></h2>
+<p><code>resolve_deps()</code> walks the tree <strong>depth-first</strong>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>for each module ref in config.modules:
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>    load module.json
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>    recurse into its depends[]  ← children resolved before the parent
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>    append (key, dir, meta) if not already resolved   ← natural dedup
+</code></pre></div>
+<p>Properties:</p>
+<ul>
+<li><strong>Topological order</strong> — a dependency always appears before the module that
+  needs it in the final source list.</li>
+<li><strong>Dedup</strong> — a module shared by several parents is included once.</li>
+<li><strong>Circular-dependency guard</strong> — a cycle aborts with
+  <code>[ERROR] Circular dependency: &lt;key&gt;</code>.</li>
+<li><strong>Path deps</strong> — a ref starting with <code>./</code> or <code>../</code> is resolved relative to the
+  <em>depending</em> module's directory, not the registry. Useful for local,
+  in-development sub-modules.</li>
+<li><strong>URL deps</strong> — a <code>depends</code> entry can be a URL too. <code>resolve_deps</code> doesn't walk
+  it directly; a URL dependency is fetched up front (see
+  <a href="#module-sources">Module sources</a>) and recorded as its own top-level entry in
+  <code>config.json</code>, which <code>resolve_deps</code> then trusts is already there.</li>
+</ul>
+<p>The resolved set feeds <code>collect_sources()</code> →
+<a href="../architecture/#build-flow">build flow</a>.</p>
+<h2 id="working-with-modules-in-a-project">Working with modules in a project<a class="headerlink" href="#working-with-modules-in-a-project" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>anvil<span class="w"> </span>modules<span class="w">                    </span><span class="c1"># list available + which are in this project</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>anvil<span class="w"> </span>addmodule<span class="w"> </span>uart<span class="w">             </span><span class="c1"># add uart + its depends, regenerate Makefile</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>anvil<span class="w"> </span>addmodule<span class="w"> </span>&lt;url-or-path&gt;<span class="w">    </span><span class="c1"># same, for an external or local module</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>anvil<span class="w"> </span>addmodule<span class="w"> </span>--yes<span class="w"> </span>&lt;ref&gt;<span class="w">      </span><span class="c1"># skip the confirmation prompt below</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>anvil<span class="w"> </span>addmodule<span class="w"> </span>--force<span class="w"> </span>&lt;name&gt;<span class="w">   </span><span class="c1"># re-record an already-added module's hash</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>anvil<span class="w"> </span>removemodule<span class="w"> </span>uart<span class="w">          </span><span class="c1"># remove (refuses if another module depends on it)</span>
+</code></pre></div>
+<p><code>addmodule</code> resolves the full dependency chain, appends new entries to
+<code>config.modules</code>, and — if the added tree contains a SoC module — scaffolds a
+<code>firmware/</code> template and sets a default <code>params.ram_addr_bits</code>.</p>
+<p>A module's name is its own claim, so a bundled key, a directory and a fetched
+archive can all declare the same one. A name already in the project from a
+<em>different</em> source is refused, naming both, rather than skipped — skipping
+quietly would leave you building against whichever source was added first,
+under a name you thought you'd just pointed somewhere else:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>✗ module 'solo' is already in this project
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>    present:  http://127.0.0.1:42759/solo.tar.gz
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>    incoming: http://127.0.0.1:42759/solo-fork.tar.gz
+</code></pre></div>
+<p>A local ref is judged by where it resolves, not how it was typed, so re-adding
+the same directory spelled absolutely or with <code>~</code> is not a different source —
+it answers <code>[Anvil] All requested modules already present.</code></p>
+<p><code>removemodule</code> refuses to drop a module that another kept module still depends
+on, to avoid leaving the project unbuildable — a <code>depends</code> entry that is a URL
+counts the same, matched against the recorded entries rather than the registry,
+since a URL is never a registry name. For a fetched module it also deletes that
+module's own directory under <code>external/</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>[Anvil] Removed directory: external/fifo@1.2.0
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>[Anvil] Removed: fifo
+</code></pre></div>
+<p>A bundled module's directory (shared by every project, under the Anvil
+installation) and a local-path module's directory (the user's own, outside
+<code>external/</code>) are never touched — only a directory that actually resolves
+inside <code>external/</code> is ever deleted, and never one another surviving entry
+still points at. A failed delete — a permissions issue, say — is only a
+<code>[WARN]</code>, since <code>config.json</code> is already saved without that entry; a leftover
+directory is harmless and can be removed by hand.</p>
+<h3 id="consent-before-installing-an-external-module">Consent before installing an external module<a class="headerlink" href="#consent-before-installing-an-external-module" title="Permanent link">&para;</a></h3>
+<p>Adding a module from a URL or a path can pull in a whole dependency tree of
+<em>other</em> external modules — a <code>depends</code> entry can itself be a URL. Before any
+of it touches disk, <code>anvil addmodule</code> fetches every archive in that closure
+into a temporary directory (fetching, not installing — nothing is written to
+<code>external/</code> or <code>config.json</code> yet), then shows the whole set and asks:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>These external modules will be added:
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>  fifo  1.2.0
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>      from  http://127.0.0.1:48287/fifo.tar.gz
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>  axi-lite  2.0.0   (required by fifo)
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>      from  http://127.0.0.1:48287/axi.tar.gz
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>  picorv-dma  0.4.0   (required by axi-lite)
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>      from  http://127.0.0.1:48287/dma.tar.gz
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>      ⚠ ships soc.json -- chooses the compiler that runs
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>Names are declared by the modules themselves; the URL is what you are trusting.
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>Add these 3 external modules? [y/N]
+</code></pre></div>
+<p>This is a real three-level <code>addmodule</code> run against a local test server, which
+is why the <code>from</code> lines point at <code>127.0.0.1</code>; against a real forge they'd show
+a resolved address such as <code>https://github.com/ana/fifo/archive/refs/tags/v1.2.0.tar.gz</code>,
+per <a href="#resolving-a-url-to-an-archive">Resolving a URL to an archive</a> above.</p>
+<p>A module's <code>name</code> is whatever its own <code>module.json</code> says — chosen by whoever
+published it, not by the URL you typed. That's why the URL gets its own line,
+shown in full: the name is a label, the URL is the thing you're actually
+trusting. Each entry also says who pulled it in (<code>required by …</code>), so an
+unexpected module in the list can be traced instead of merely noticed. A
+module carrying a <code>soc.json</code> is flagged, because that's the one that picks the
+compiler <code>anvil compile</code> runs — see <a href="#what-the-hash-does-not-prove">the note on trust</a>
+below.</p>
+<p>Answering anything but <code>y</code> aborts: <code>[Anvil] Aborted -- nothing installed.</code>
+Nothing is written to <code>external/</code>, and <code>config.json</code> is untouched.</p>
+<p><code>--yes</code> skips the question (the listing above still prints). It's required
+when stdin isn't a terminal — the toolchain installer, for instance, runs
+<code>anvil</code> with stdin from <code>/dev/null</code> — because silence must never be read as
+agreement:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>[ERROR] refusing to install external modules without confirmation
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>        stdin is not a terminal -- pass --yes if this is intended
+</code></pre></div>
+<p>Consent is asked once, not on every build. <code>config.json</code> already records what
+was agreed to, so <code>anvil build</code> re-fetching a missing <code>external/</code> (see
+<a href="#external"><code>external/</code></a> above) just verifies the recorded hash instead of
+asking again. A hash that doesn't match is an error, not a fresh prompt — and
+which error depends on which side moved.</p>
+<p><strong>The directory was missing and has just been re-fetched.</strong> The hash is
+checked in a staging directory, so code you never agreed to doesn't reach
+<code>external/</code> at all:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>[Anvil] Fetching fifo from http://127.0.0.1:42759/fifo.tar.gz ...
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>✗ module 'fifo' does not match its recorded hash
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    source: http://127.0.0.1:42759/fifo.tar.gz
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>    recorded: sha256:ea54e0c9758d0b801bc0c998936240f3867b5dcd30d495d1c7da80378e4ed9d6
+<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>       found: sha256:112b3a2cf516b3d1fb14349a084006abf65bd6a4d864d19535dace0901042eb9
+<a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>    the recorded source returned different code -- the tag may have moved
+</code></pre></div>
+<p>There is deliberately no <code>--force</code> here. On this path it would mean "record
+whatever the server just sent", which is the one thing the hash exists to
+prevent — the only witness you'd be believing is the one that changed. Find
+out why the source moved instead: a re-tagged release, a rewritten branch, a
+URL that no longer points where you thought. Nothing was written, so once the
+source serves the recorded code again the next build simply fetches it; there
+is no half-installed tree left to delete first.</p>
+<p><strong>The directory was already there and something edited it.</strong> Here the two
+sides you're comparing are both yours, so re-recording is a judgement you can
+actually make:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>✗ module 'fifo' does not match its recorded hash
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>    recorded: sha256:ea54e0c9758d0b801bc0c998936240f3867b5dcd30d495d1c7da80378e4ed9d6
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>         found: sha256:a5b454e3ed0a707ad86a3dcca1703870e8997db76c8b80c368c7676bd2ed3866
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>      re-record with: anvil addmodule --force fifo
+</code></pre></div>
+<p>If the change was intentional, <code>anvil addmodule --force &lt;name&gt;</code> re-records the
+new hash — showing the old and new hash and re-flagging <code>soc.json</code>, gated by
+the same <code>[y/N]</code> prompt. If it wasn't, don't re-record it: work out what wrote
+into <code>external/</code> without being asked.</p>
+<h3 id="what-the-hash-does-not-prove">What the hash does not prove<a class="headerlink" href="#what-the-hash-does-not-prove" title="Permanent link">&para;</a></h3>
+<p>The hash proves a module's code has not changed <strong>since it was added</strong> — it is
+a check for accidental drift, not a security boundary. It does not prove the
+code is safe to run. <code>soc.json</code> supplies the compiler and <code>objcopy</code> that
+<code>anvil compile</code> executes, so a fetched SoC module chooses which binary runs on
+your machine, and Anvil does not sandbox that choice.</p>
+<p>This is accepted deliberately, not an oversight: the trust model is the
+publisher, the same as any other package manager — installing a package
+already means running its build scripts. Anvil's job is to make sure the code
+you agreed to is the code that's actually there, not to judge whether the
+publisher is trustworthy. That judgment is the one the consent prompt above is
+asking you to make.</p>
+<h2 id="authoring-a-new-module">Authoring a new module<a class="headerlink" href="#authoring-a-new-module" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>mkdir<span class="w"> </span>my_block<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>my_block
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>anvil<span class="w"> </span>init<span class="w"> </span>--module<span class="w"> </span>my_block<span class="w">   </span><span class="c1"># writes module.json + my_block.sv stub</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="c1"># write RTL, add tb/ if you want, list depends[] in module.json</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>anvil<span class="w"> </span>installmodule<span class="w">            </span><span class="c1"># copies dir into modules/ + updates modules.json</span>
+</code></pre></div>
+<p><code>installmodule</code> copies the current directory into
+<code>modules/&lt;name&gt;@&lt;version&gt;/</code> (ignoring <code>build/</code>, <code>*.vcd</code>, <code>__pycache__</code>, <code>.git</code>)
+and registers it. After that, any project can <code>anvil addmodule &lt;name&gt;</code>.</p>
+<p>To make the module a <strong>SoC</strong>, add a <code>soc.json</code> (plus <code>link.ld</code> and <code>startup.S</code>)
+before installing — see <a href="../file-formats/#socjson-soc-build-config">SoC fields</a>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 LogiSmith — MIT License
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "content.code.copy", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
