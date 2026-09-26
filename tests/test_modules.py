@@ -1,5 +1,5 @@
-import contextlib, functools, http.server, io, json, os, socket
-import shutil, socketserver, struct, subprocess, sys, tarfile, tempfile, threading, unittest, zipfile
+import contextlib, functools, gc, http.server, io, json, os, socket, warnings
+import shutil, socketserver, struct, subprocess, sys, tarfile, tempfile, threading, time, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fetch                                                    # noqa: E402
@@ -3573,6 +3573,423 @@ class TestReadOnlyCommandsOnIncompleteModules(TempCase):
         for text in (mods_out.getvalue(), status_out.getvalue()):
             self.assertIn("missing", text.lower())
             self.assertIn("../m does not exist and '42' cannot be re-fetched", text)
+
+
+
+class _ForbiddenHandler(socketserver.BaseRequestHandler):
+    """GitHub's answer once the shared IP is over the 60/hour unauthenticated limit."""
+    def handle(self):
+        self.request.recv(4096)
+        body = b'{"message": "API rate limit exceeded"}'
+        self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n"
+                             b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+        self.request.close()
+
+
+class _StallingHandler(socketserver.BaseRequestHandler):
+    """Takes the request and never answers -- the hung network the timeout exists for."""
+    def handle(self):
+        self.request.recv(4096)
+        time.sleep(30)
+
+
+def closed_port():
+    """A port nothing is listening on -- what 'no network' looks like from urllib."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class UpdateCheckCase(TempCase):
+    """A TestCase owning the update cache, the API seam and the reported installed version."""
+    ENV = ("HOME", "XDG_CACHE_HOME", "ANVIL_UPDATE_API", "ANVIL_NO_UPDATE_CHECK")
+
+    def setUp(self):
+        TempCase.setUp(self)
+        self._env = {k: os.environ.get(k) for k in self.ENV}
+        os.environ["HOME"] = self.tmp
+        os.environ["XDG_CACHE_HOME"] = os.path.join(self.tmp, "cache")
+        os.environ.pop("ANVIL_UPDATE_API", None)
+        os.environ.pop("ANVIL_NO_UPDATE_CHECK", None)
+        self._timeout, self._read_version = anvil.UPDATE_TIMEOUT, anvil.read_version
+        self._warn = anvil.warn_if_outdated
+
+    def tearDown(self):
+        anvil.UPDATE_TIMEOUT, anvil.read_version = self._timeout, self._read_version
+        anvil.warn_if_outdated = self._warn
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        TempCase.tearDown(self)
+
+    def installed(self, version):
+        anvil.read_version = lambda: version
+
+    def cached(self, latest, age=0):
+        """Put a cache entry `age` seconds old in place."""
+        path = anvil.update_cache_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"checked_at": time.time() - age, "latest": latest}, f)
+
+    def cache(self):
+        with open(anvil.update_cache_file()) as f:
+            return json.load(f)
+
+    def api_dir(self, body):
+        d = os.path.join(self.tmp, "api")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "latest.json"), "w") as f:
+            f.write(body)
+        return d
+
+    def point_at(self, port):
+        os.environ["ANVIL_UPDATE_API"] = f"http://127.0.0.1:{port}/latest.json"
+
+
+class TestUpdateVersionComparison(unittest.TestCase):
+    def test_a_newer_release_is_newer(self):
+        self.assertTrue(anvil.is_newer("1.3.0", "1.2.1"))
+
+    def test_the_same_version_is_not_newer(self):
+        self.assertFalse(anvil.is_newer("1.2.1", "1.2.1"))
+
+    def test_an_older_release_is_not_newer(self):
+        self.assertFalse(anvil.is_newer("1.2.0", "1.2.1"))
+
+    def test_ten_beats_nine_the_way_a_string_compare_does_not(self):
+        self.assertLess("1.10.0", "1.9.0")              # the bug a string compare would ship
+        self.assertTrue(anvil.is_newer("1.10.0", "1.9.0"))
+        self.assertFalse(anvil.is_newer("1.9.0", "1.10.0"))
+
+    def test_a_v_prefix_is_tolerated_on_either_side(self):
+        self.assertTrue(anvil.is_newer("v1.3.0", "1.2.1"))
+        self.assertFalse(anvil.is_newer("v1.2.1", "1.2.1"))
+
+    def test_an_unparseable_tag_is_not_an_answer(self):
+        for tag in ("nightly", "1.2.3-rc1", "", None, 13, "1.2.x"):
+            self.assertFalse(anvil.is_newer(tag, "1.2.1"), tag)
+
+    def test_an_unparseable_installed_version_is_not_an_answer(self):
+        self.assertFalse(anvil.is_newer("9.9.9", "unknown"))
+
+    def test_missing_components_count_as_zero(self):
+        self.assertFalse(anvil.is_newer("1.2", "1.2.0"))
+        self.assertTrue(anvil.is_newer("1.2.1", "1.2"))
+
+
+class TestUpdateNoticeFromCache(UpdateCheckCase):
+    def test_a_newer_cached_release_prints_one_line_naming_both_versions_and_the_fix(self):
+        self.installed("1.2.0")
+        self.cached("1.3.0")
+        with capture() as out:
+            anvil.warn_if_outdated("status")
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertIn("1.2.0", text)
+        self.assertIn("1.3.0", text)
+        self.assertIn("anvil update", text)
+
+    def test_the_same_version_prints_nothing(self):
+        self.installed("1.3.0")
+        self.cached("1.3.0")
+        with capture() as out:
+            anvil.warn_if_outdated("status")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_an_older_latest_prints_nothing(self):
+        self.installed("1.3.0")
+        self.cached("1.2.0")
+        with capture() as out:
+            anvil.warn_if_outdated("status")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_an_unparseable_cached_tag_prints_nothing(self):
+        self.installed("1.2.0")
+        self.cached("nightly")
+        with capture() as out:
+            anvil.warn_if_outdated("status")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_the_env_var_disables_the_check_without_a_request(self):
+        self.installed("1.2.0")
+        os.environ["ANVIL_NO_UPDATE_CHECK"] = "1"
+        with serve_counted(self.api_dir('{"tag_name": "9.9.9"}')) as (base, hits):
+            os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+            with capture() as out:
+                anvil.warn_if_outdated("version")
+            self.assertEqual(out.getvalue(), "")
+            self.assertEqual(hits, [])
+
+    def test_the_cache_never_lives_inside_the_clone_anvil_update_checks_out(self):
+        os.environ.pop("XDG_CACHE_HOME")
+        self.assertEqual(anvil.update_cache_file(),
+                         os.path.join(self.tmp, ".cache", "anvil", "update-check.json"))
+        os.environ["XDG_CACHE_HOME"] = os.path.join(self.tmp, "cache")
+        path = anvil.update_cache_file()
+        self.assertFalse(path.startswith(anvil.SCRIPT_DIR + os.sep))
+
+
+class TestUpdateRefreshPolicy(UpdateCheckCase):
+    def test_a_fresh_cache_is_not_refetched(self):
+        self.installed("1.2.0")
+        self.cached("1.3.0", age=60)
+        with serve_counted(self.api_dir('{"tag_name": "9.9.9"}')) as (base, hits):
+            os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+            with capture() as out:
+                anvil.warn_if_outdated("status")
+        self.assertEqual(hits, [])
+        self.assertIn("1.3.0", out.getvalue())
+
+    def test_an_expired_cache_is_refetched_and_rewritten(self):
+        self.installed("1.2.0")
+        self.cached("1.3.0", age=25 * 3600)
+        with serve_counted(self.api_dir('{"tag_name": "9.9.9"}')) as (base, hits):
+            os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+            with capture() as out:
+                anvil.warn_if_outdated("status")
+        self.assertEqual(hits, ["/latest.json"])
+        self.assertIn("9.9.9", out.getvalue())
+        self.assertEqual(self.cache()["latest"], "9.9.9")
+        self.assertLess(time.time() - self.cache()["checked_at"], 60)
+
+    def test_no_cache_at_all_is_refetched(self):
+        self.installed("1.2.0")
+        with serve_counted(self.api_dir('{"tag_name": "9.9.9"}')) as (base, hits):
+            os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+            with capture() as out:
+                anvil.warn_if_outdated("status")
+        self.assertEqual(hits, ["/latest.json"])
+        self.assertIn("9.9.9", out.getvalue())
+
+    def test_version_and_doctor_force_a_refresh_through_a_fresh_cache(self):
+        for cmd in ("version", "doctor"):
+            with self.subTest(cmd=cmd):
+                self.installed("1.2.0")
+                self.cached("1.2.0", age=60)
+                with serve_counted(self.api_dir('{"tag_name": "9.9.9"}')) as (base, hits):
+                    os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+                    with capture() as out:
+                        anvil.warn_if_outdated(cmd)
+                self.assertEqual(hits, ["/latest.json"])
+                self.assertIn("9.9.9", out.getvalue())
+
+    def test_a_checked_at_in_the_future_is_stale_not_fresh_forever(self):
+        self.installed("1.2.0")
+        self.cached("1.2.0", age=-30 * 86400)           # clock skew, or a clock set back afterwards
+        with serve_counted(self.api_dir('{"tag_name": "9.9.9"}')) as (base, hits):
+            os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+            with capture() as out:
+                anvil.warn_if_outdated("status")
+        self.assertEqual(hits, ["/latest.json"])
+        self.assertIn("9.9.9", out.getvalue())
+
+
+class TestUpdateCheckFailsSilently(UpdateCheckCase):
+    def test_a_refused_connection_prints_nothing(self):
+        self.installed("1.2.0")
+        self.point_at(closed_port())
+        with capture() as out:
+            anvil.warn_if_outdated("version")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_a_refused_connection_still_records_the_attempt(self):
+        self.installed("1.2.0")
+        self.point_at(closed_port())
+        with capture():
+            anvil.warn_if_outdated("version")
+        self.assertLess(time.time() - self.cache()["checked_at"], 60)
+
+    def test_a_hung_server_prints_nothing_once_the_timeout_expires(self):
+        self.installed("1.2.0")
+        anvil.UPDATE_TIMEOUT = 0.2
+        srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _StallingHandler)
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            self.point_at(srv.server_address[1])
+            started = time.time()
+            with capture() as out:
+                anvil.warn_if_outdated("version")
+            self.assertEqual(out.getvalue(), "")
+            self.assertLess(time.time() - started, 5)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_a_rate_limited_403_prints_nothing(self):
+        self.installed("1.2.0")
+        srv = socketserver.TCPServer(("127.0.0.1", 0), _ForbiddenHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            self.point_at(srv.server_address[1])
+            with capture() as out:
+                anvil.warn_if_outdated("version")
+            self.assertEqual(out.getvalue(), "")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_a_rate_limited_403_leaves_nothing_open_to_warn_about(self):
+        self.installed("1.2.0")
+        srv = socketserver.TCPServer(("127.0.0.1", 0), _ForbiddenHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            self.point_at(srv.server_address[1])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with capture():
+                    anvil.warn_if_outdated("version")
+                gc.collect()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        # an HTTPError is an open response; under PYTHONWARNINGS the leak would print on stderr
+        self.assertEqual([str(w.message) for w in caught], [])
+
+    def test_malformed_json_prints_nothing(self):
+        self.installed("1.2.0")
+        with serve(self.api_dir('{"tag_name": "9.9')) as base:
+            os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+            with capture() as out:
+                anvil.warn_if_outdated("version")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_that_is_not_a_release_object_prints_nothing(self):
+        self.installed("1.2.0")
+        for body in ('[]', '{}', '{"tag_name": null}', '{"tag_name": 9}', 'null'):
+            with self.subTest(body=body):
+                with serve(self.api_dir(body)) as base:
+                    os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+                    with capture() as out:
+                        anvil.warn_if_outdated("version")
+                self.assertEqual(out.getvalue(), "")
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores file mode bits")
+    def test_an_unwritable_cache_dir_prints_nothing_and_makes_no_request(self):
+        self.installed("1.2.0")
+        os.makedirs(os.environ["XDG_CACHE_HOME"], mode=0o500)
+        try:
+            with serve_counted(self.api_dir('{"tag_name": "9.9.9"}')) as (base, hits):
+                os.environ["ANVIL_UPDATE_API"] = base + "/latest.json"
+                with capture() as out:
+                    anvil.warn_if_outdated("version")
+            self.assertEqual(out.getvalue(), "")
+            self.assertEqual(hits, [])                  # nothing can record the attempt, so none is made
+        finally:
+            os.chmod(os.environ["XDG_CACHE_HOME"], 0o700)
+
+    def test_a_corrupt_cache_file_prints_nothing_and_is_replaced(self):
+        self.installed("1.2.0")
+        path = anvil.update_cache_file()
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            f.write("{not json")
+        self.point_at(closed_port())
+        with capture() as out:
+            anvil.warn_if_outdated("status")
+        self.assertEqual(out.getvalue(), "")
+        self.assertIsNone(self.cache()["latest"])
+
+    def test_a_failed_refresh_keeps_the_last_known_release(self):
+        self.installed("1.2.0")
+        self.cached("1.3.0", age=25 * 3600)
+        self.point_at(closed_port())
+        with capture() as out:
+            anvil.warn_if_outdated("status")
+        self.assertIn("1.3.0", out.getvalue())
+        self.assertEqual(self.cache()["latest"], "1.3.0")
+
+
+class TestUpdateCheckIsNotWiredIntoCommands(UpdateCheckCase):
+    def test_calling_a_command_function_directly_never_checks_for_updates(self):
+        self.installed("1.2.0")
+        self.cached("9.9.9")
+        with capture() as out:
+            anvil.cmd_version([])
+        self.assertNotIn("9.9.9", out.getvalue())       # the hook is main()'s, which is why the suite is offline
+
+
+class TestUpdateCheckAtTheDispatchPoint(UpdateCheckCase):
+    def _main(self, *argv):
+        old = sys.argv
+        sys.argv = ["anvil", *argv]
+        try:
+            anvil.main()
+        finally:
+            sys.argv = old
+
+    def _stub_clean(self, fn):
+        old = anvil.COMMANDS["clean"]
+        anvil.COMMANDS["clean"] = (fn, old[1])
+        self.addCleanup(lambda: anvil.COMMANDS.__setitem__("clean", old))
+
+    def test_a_command_that_exits_nonzero_still_gets_the_check(self):
+        seen = []
+        anvil.warn_if_outdated = seen.append
+        self._stub_clean(lambda args: sys.exit(3))
+        with self.assertRaises(SystemExit) as ctx:
+            self._main("clean")
+        self.assertEqual(ctx.exception.code, 3)
+        self.assertEqual(seen, ["clean"])
+
+    def test_ctrl_c_is_not_then_made_to_wait_on_a_network_check(self):
+        seen = []
+        anvil.warn_if_outdated = seen.append
+        def interrupted(args):
+            raise KeyboardInterrupt
+        self._stub_clean(interrupted)
+        with self.assertRaises(KeyboardInterrupt):
+            self._main("clean")
+        self.assertEqual(seen, [])
+
+
+class TestUpdateCheckThroughTheCli(UpdateCheckCase):
+    def anvil(self, *args, **env):
+        e = dict(os.environ, **env)
+        e["XDG_CACHE_HOME"] = os.environ["XDG_CACHE_HOME"]
+        return subprocess.run([sys.executable, os.path.join(anvil.SCRIPT_DIR, "anvil.py"), *args],
+                              capture_output=True, text=True, cwd=self.tmp, env=e)
+
+    def test_the_notice_follows_the_commands_own_output(self):
+        with serve(self.api_dir('{"tag_name": "99.0.0"}')) as base:
+            r = self.anvil("version", ANVIL_UPDATE_API=base + "/latest.json")
+        lines = r.stdout.strip().splitlines()
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(lines[0].startswith("anvil "))
+        self.assertIn("99.0.0", lines[-1])
+        self.assertIn("anvil update", lines[-1])
+
+    def test_the_short_version_flag_gets_the_notice_too(self):
+        with serve(self.api_dir('{"tag_name": "99.0.0"}')) as base:
+            r = self.anvil("-v", ANVIL_UPDATE_API=base + "/latest.json")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("99.0.0", r.stdout)
+
+    def test_a_failing_command_keeps_its_exit_code_and_still_gets_the_notice(self):
+        with serve(self.api_dir('{"tag_name": "99.0.0"}')) as base:
+            r = self.anvil("examples", ANVIL_UPDATE_API=base + "/latest.json")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("[ERROR] Specify a board", r.stdout)
+        self.assertIn("99.0.0", r.stdout.strip().splitlines()[-1])
+
+    def test_a_broken_check_leaves_output_byte_identical(self):
+        off = self.anvil("examples", ANVIL_NO_UPDATE_CHECK="1")
+        broken = self.anvil("examples", ANVIL_UPDATE_API=f"http://127.0.0.1:{closed_port()}/x")
+        self.assertEqual((off.stdout, off.stderr, off.returncode),
+                         (broken.stdout, broken.stderr, broken.returncode))
+
+    def test_the_env_var_disables_the_check_end_to_end(self):
+        with serve(self.api_dir('{"tag_name": "99.0.0"}')) as base:
+            r = self.anvil("version", ANVIL_UPDATE_API=base + "/latest.json",
+                           ANVIL_NO_UPDATE_CHECK="1")
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("99.0.0", r.stdout)
+        self.assertEqual(len(r.stdout.strip().splitlines()), 1)
 
 
 if __name__ == "__main__":

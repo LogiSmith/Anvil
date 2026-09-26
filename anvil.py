@@ -43,6 +43,8 @@ import json
 import time
 import glob
 import tempfile
+import urllib.error
+import urllib.request
 import fetch
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
@@ -1966,6 +1968,95 @@ def git_short_commit():
         pass
     return ""
 
+# ─── Update check ─────────────────────────────────────────────────────────────
+UPDATE_LATEST_API = "https://api.github.com/repos/LogiSmith/Anvil/releases/latest"
+UPDATE_CHECK_TTL  = 24 * 3600
+UPDATE_TIMEOUT    = 2
+UPDATE_FORCES     = ("version", "doctor")   # the user is asking about state, so pay for a fresh answer
+
+def update_cache_file():
+    """Where the last known release is remembered -- never under SCRIPT_DIR, which `anvil update` checks out."""
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "anvil", "update-check.json")
+
+def parse_version(s):
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)", s.strip()) if isinstance(s, str) else None
+    return tuple(int(p) for p in m.group(1).split(".")) if m else None
+
+def is_newer(latest, installed):
+    """True only when both parse and `latest` is genuinely ahead -- a tag we cannot read is not an answer."""
+    a, b = parse_version(latest), parse_version(installed)
+    if a is None or b is None:
+        return False
+    n = max(len(a), len(b))
+    return a + (0,) * (n - len(a)) > b + (0,) * (n - len(b))
+
+def _read_update_cache():
+    try:
+        with open(update_cache_file()) as f:
+            cache = json.load(f)
+        return cache if isinstance(cache, dict) else {}
+    except Exception:
+        return {}
+
+def _write_update_cache(latest):
+    """Stamp the cache with `latest` (None when unknown); False when the cache cannot be written."""
+    path = update_cache_file()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}"
+        with open(tmp, "w") as f:
+            json.dump({"checked_at": time.time(), "latest": latest}, f)
+        os.replace(tmp, path)   # atomic: a second anvil never reads a half-written cache
+        return True
+    except Exception:
+        return False
+
+def _fetch_latest_tag():
+    """The newest release tag GitHub reports, or None -- every way of not knowing is the same None."""
+    url = os.environ.get("ANVIL_UPDATE_API") or UPDATE_LATEST_API
+    req = urllib.request.Request(url, headers={"User-Agent": fetch.USER_AGENT,
+                                               "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as r:
+            tag = json.loads(r.read(1 << 18)).get("tag_name")
+        return tag if isinstance(tag, str) else None
+    except urllib.error.HTTPError as e:
+        e.close()               # 403 and 429 arrive here, and an HTTPError is an open response
+        return None
+    except Exception:
+        return None
+
+def latest_release(force=False):
+    """The newest release known, refetched at most once per UPDATE_CHECK_TTL. None when never learnt."""
+    cache = _read_update_cache()
+    known, at = cache.get("latest"), cache.get("checked_at")
+    age = time.time() - at if isinstance(at, (int, float)) else None
+    # a negative age is a clock that moved, not a fresh cache -- skew must not silence the check for good
+    if not force and age is not None and 0 <= age < UPDATE_CHECK_TTL:
+        return known
+    # stamp before fetching: what cannot record an attempt may not spend one either, and the 60
+    # unauthenticated requests per hour are shared by every machine behind one NAT
+    if not _write_update_cache(known):
+        return known
+    tag = _fetch_latest_tag()
+    if tag is None:
+        return known            # a failed refresh falls back on the last thing the network did say
+    _write_update_cache(tag)
+    return tag
+
+def warn_if_outdated(cmd):
+    """One line when a newer release exists; silence for every other outcome, bugs in here included."""
+    if os.environ.get("ANVIL_NO_UPDATE_CHECK"):
+        return
+    try:
+        installed = read_version()
+        latest    = latest_release(force=cmd in UPDATE_FORCES)
+        if is_newer(latest, installed):
+            print(yellow(f"⚠ anvil {installed} is out of date -- {latest} is available, run 'anvil update'"))
+    except Exception:
+        pass
+
 def cmd_version(args):
     """Print the installed Anvil version."""
     commit = git_short_commit()
@@ -2055,15 +2146,21 @@ def main():
     if not args or args[0] in ("-h", "--help"):
         usage()
         sys.exit(0)
-    if args[0] in ("-v", "--version"):
-        cmd_version(args[1:])
-        sys.exit(0)
-    cmd = args[0]
+    cmd = "version" if args[0] in ("-v", "--version") else args[0]
     if cmd not in COMMANDS:
         print(f"[ERROR] Unknown command: {cmd}")
         usage()
         sys.exit(1)
-    COMMANDS[cmd][0](args[1:])
+    interrupted = False
+    try:
+        COMMANDS[cmd][0](args[1:])
+    except KeyboardInterrupt:
+        interrupted = True      # Ctrl-C must not then be made to wait on a network check
+        raise
+    finally:
+        # after the command, never before: a line above a synthesis log is a line nobody reads
+        if not interrupted:
+            warn_if_outdated(cmd)
 
 if __name__ == "__main__":
     main()
